@@ -1,0 +1,30 @@
+{
+  "name": "agent-evals-pi-harness",
+  "version": "0.4.0",
+  "private": true,
+  "type": "module",
+  "description": "pi-mono runtime bridge for the Agent evaluation workbench",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test dist/src/*.test.js dist/pi-agent/src/*.test.js",
+    "start": "node --env-file-if-exists=.env --disable-warning=ExperimentalWarning dist/src/server.js",
+    "dev": "npm run build && npm start"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "0.74.0",
+    "@earendil-works/pi-ai": "0.74.0",
+    "exceljs": "4.4.0",
+    "jszip": "3.10.1",
+    "playwright-core": "^1.62.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  },
+  "overrides": {
+    "exceljs": {
+      "uuid": "11.1.1"
+    }
+  }
+}

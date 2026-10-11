@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>轨迹 · Agent 自动化评测</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/browser.css">
+  <link rel="stylesheet" href="/static/agent-evaluation.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <a class="brand" href="#overview" data-jump="overview" aria-label="评测首页">
+        <span class="brand-mark"><i></i><i></i><i></i></span>
+        <span><b>轨迹</b><small>AGENT EVALS</small></span>
+      </a>
+      <nav aria-label="主导航">
+        <button class="nav-item active" data-section="overview" data-view="overview"><span>总览</span><em>01</em></button>
+        <button class="nav-item" data-section="datasets" data-view="brief"><span>评测集管理</span><em>02</em></button>
+        <button class="nav-item" data-section="workbench" data-view="run-setup"><span>跑测工作台</span><em>03</em></button>
+        <button class="nav-item" data-section="analysis" data-view="reports"><span>根因分析</span><em>04</em></button>
+      </nav>
+      <div class="side-foot">
+        <span class="status-dot"></span>
+        <span id="harness-status">正在连接 pi-mono…</span>
+      </div>
+    </aside>
+
+    <main>
+      <header class="topbar">
+        <div class="project-switch">
+          <span>当前项目</span>
+          <select id="project-select" aria-label="选择评测项目"></select>
+          <button class="icon-button project-add" id="new-project" type="button" aria-label="新建 Agent 评测项目">＋</button>
+          <button class="project-danger" id="delete-project" type="button">删除项目</button>
+        </div>
+        <div class="top-actions">
+          <a id="html-report" class="button ghost" target="_blank">查看报告</a>
+          <a id="xlsx-report" class="button ink">导出 Excel</a>
+        </div>
+      </header>
+      <nav id="section-tabs" class="section-tabs" aria-label="当前模块功能"></nav>
+
+      <section class="view active" id="view-overview">
+        <div class="page-intro">
+          <div><p class="eyebrow">PROJECT LEDGER</p><h1>项目与评测记录</h1></div>
+          <p class="lede">按项目查看测试集、历次评测和报告。每次执行都形成独立批次，结论可以追溯到具体问题、回复与截图。</p>
+        </div>
+        <div class="metric-grid overview-metrics">
+          <article class="metric"><span>项目</span><strong id="overview-project-count">—</strong><small>独立 Agent 评测项目</small></article>
+          <article class="metric"><span>评测批次</span><strong id="overview-batch-count">—</strong><small>每次执行单独留档</small></article>
+          <article class="metric"><span>执行用例</span><strong id="overview-run-count">—</strong><small>包含成功与失败记录</small></article>
+          <article class="metric"><span>当前项目</span><strong id="overview-current-key">—</strong><small id="overview-current-name">—</small></article>
+        </div>
+        <div class="overview-flow panel" aria-label="评测闭环">
+          <div><b>01</b><span>准备评测集</span><small>用例与规则完成审核</small></div>
+          <i>→</i><div><b>02</b><span>创建跑测</span><small>选择执行方式并采集证据</small></div>
+          <i>→</i><div><b>03</b><span>生成报告</span><small>回答与过程联合评判</small></div>
+          <i>→</i><div><b>04</b><span>回归验证</span><small>失败用例进入下一版本</small></div>
+        </div>
+        <div class="overview-actions">
+          <button class="action-card" type="button" data-jump="brief"><span>准备评测集</span><small>补齐能力资料并管理用例</small></button>
+          <button class="action-card" type="button" data-jump="run-setup"><span>创建跑测任务</span><small>进入统一跑测入口</small></button>
+          <button class="action-card" type="button" data-jump="reports"><span>查看评测报告</span><small>从结果下钻到失败证据</small></button>
+        </div>
+      </section>
+
+      <section class="view" id="view-rag">
+        <div class="section-title"><div><p class="eyebrow">PLAYWRIGHT · RAG COLLECTION</p><h1>RAG 自动采集</h1></div><p>保留原有浏览器批量提问、回答采集、耗时记录与证据截图。</p></div>
+        <div class="requirement-strip"><span><b>必选</b> 当前项目、已审核用例、执行方式</span><span><b>按规则必选</b> Top-K、Trace 或产物证据</span><span><b>可选</b> 批次范围、暂停与续跑</span></div>
+        <article class="panel launch-panel overview-launch">
+            <div class="launch-copy">
+            <p class="eyebrow">RAG EVALUATION RUN</p><h2>开始一轮可追溯评测</h2>
+            <p>当前项目：<b id="launch-project-name">—</b>。执行前可选择全部、单条或任意多条已审核用例。</p>
+            </div><div class="launch-controls">
+            <label>被测 Agent 接入方式<select id="adapter-overview"><option value="browser">Playwright 浏览器（推荐）</option><option value="mock">Mock Agent（闭环演示）</option><option value="office_agent">Office Agent API（Base URL + Agent ID）</option><option value="openai_compatible">OpenAI 兼容接口（环境变量）</option></select></label>
+            <label>执行流程<select id="workflow-mode"><option value="collect_first">先统一采集，再补评（当前推荐）</option><option value="live_eval">逐条采集并立即评测</option></select></label>
+            <p class="workflow-note" id="workflow-note">先把问题、回答和完整截图回填到原始 Excel；评测模型恢复后，再从批次详情统一补评。</p>
+            <div id="browser-target" class="target-config" hidden>
+              <label>Office 页面地址
+                <input id="browser-office-url" type="url" placeholder="https://your-agent.example.com/office?officeId=..." autocomplete="url">
+              </label>
+              <p class="privacy-note">首次点击后会打开专用 Chromium。请在该窗口登录 Office 并进入目标 Agent；登录状态只保存在本机。</p>
+              <button class="button ghost full" type="button" id="open-test-browser">打开测试浏览器 / 登录</button>
+              <p class="browser-state" id="browser-state">正在检查 Playwright…</p>
+            </div>
+            <div id="office-target" class="target-config" hidden>
+              <label>Office Agent API Base URL
+                <input id="office-base-url" type="url" placeholder="请填写 Agent API 网关，不是 Office 网页链接" autocomplete="url">
+              </label>
+              <label>本次评测的 Agent ID
+                <input id="office-agent-id" placeholder="每次评测可更换" autocomplete="off">
+              </label>
+              <label>Agent profile <small>例如 xhs；没有时可留空</small>
+                <input id="office-profile" placeholder="xhs" autocomplete="off">
+              </label>
+              <label>登录 JWT <small>可选，仅随本次执行发送，不保存</small>
+                <input id="office-jwt" type="password" placeholder="手动登录后粘贴；免认证环境可留空" autocomplete="off">
+              </label>
+              <p class="privacy-note">使用 POST 请求：<code id="office-endpoint-preview">{API Base URL}/{Agent ID}/{profile}/v1/chat/completions</code></p>
+            </div>
+            <button class="button signal run-all">开始测试 <span>⌁</span></button>
+            </div>
+        </article>
+      </section>
+
+      <section class="view" id="view-run-setup">
+        <div class="section-title"><div><p class="eyebrow">NEW EVALUATION</p><h1>新建跑测</h1></div><p>先选择评测范围，再进入对应的真实执行流程。</p></div>
+        <div class="panel run-dataset-picker"><div><span>当前评测集</span><b id="run-dataset-name">请选择评测集</b><small>跑测只使用该评测集中的用例</small></div><label>切换评测集<select id="run-dataset-select"></select></label></div>
+        <div class="run-type-grid">
+          <button class="run-type-card" type="button" data-jump="rag"><span class="run-type-icon">R</span><b>RAG 回答评测</b><p>使用 Playwright 或 API 批量提问，采集回答、耗时、Top-K 与截图，再生成报告。</p><em>进入 RAG 自动采集 →</em></button>
+          <button class="run-type-card" type="button" data-jump="agent"><span class="run-type-icon">A</span><b>Agent 过程评测</b><p>读取 Langfuse Trace，检查模型调用、工具选择、参数、顺序与最终回复。</p><em>进入 Agent 链路跑测 →</em></button>
+          <button class="run-type-card" type="button" data-jump="runs"><span class="run-type-icon">↻</span><b>继续已有任务</b><p>查看执行记录、回答证据与评分结果，失败后从保留的上下文继续处理。</p><em>查看运行任务 →</em></button>
+        </div>
+        <div class="panel judge-run-note"><div><b>本项目默认评测模型</b><p>RAG 等自动评判使用这里选择的模型；Agent Trace 评测还可单次切换。</p></div><label class="judge-run-picker">选择模型<select id="run-judge-model-select" aria-label="选择项目默认评测模型"></select></label><button class="button ghost" type="button" data-jump="judge-models">管理评测模型 →</button></div>
+        <div class="panel dependency-guide"><div><p class="eyebrow">CONFIGURATION LOGIC</p><h2>必选项由评测目标决定</h2></div><div class="dependency-rows"><span><b>始终必选</b> 被测对象、包含已审核用例的评测集、执行方式、至少一项规则</span><span><b>条件必选</b> 检索规则需要 Top-K；过程规则需要 Trace；产物规则需要输出文件</span><span><b>可以选配</b> 截图、评判模型、人工复核、并发、重试与对比基线</span></div></div>
+      </section>
+
+      <section class="view" id="view-judge-models">
+        <div class="section-title"><div><p class="eyebrow">JUDGE MODELS</p><h1>评测模型</h1></div><p>配置负责评判结果的模型；被测 Agent 的模型在跑测目标中单独设置。</p></div>
+        <div class="judge-model-head"><p id="judge-model-scope">内置模型共用后台 .env 中的网关与密钥；自定义模型仅在当前项目可见。默认模型用于自动评判。</p><button class="button signal" id="new-judge-model" type="button">新增自定义模型</button></div>
+        <div id="judge-model-list" class="judge-model-list"></div>
+        <form id="judge-model-form" class="panel judge-model-form" hidden>
+          <div class="dialog-head"><div><p class="eyebrow">MODEL CONNECTION</p><h2 id="judge-model-form-title">新增评测模型</h2></div><button class="icon-button" id="cancel-judge-model" type="button" aria-label="关闭配置表单">×</button></div>
+          <input type="hidden" name="id">
+          <div class="two-col"><label>配置名称<input name="name" required maxlength="80" placeholder="例如：DeepSeek Judge"></label><label>模型 ID<input name="model_id" required placeholder="接口使用的准确模型名称"></label></div>
+          <label>接口 Base URL <small>OpenAI 兼容接口，填到 /v1，不要填写 /chat/completions</small><input name="base_url" type="url" required placeholder="https://example.com/v1" autocomplete="off"></label>
+          <label>API Key <small id="judge-key-hint">只保存在本机，不会回显</small><input name="api_key" type="password" required autocomplete="new-password" placeholder="填写 API Key"></label>
+          <label class="judge-default-check"><input name="is_default" type="checkbox">设为当前项目的默认评测模型</label>
+          <p class="privacy-note">密钥保存在本机 Git 忽略的配置文件中，不会随代码提交。当前服务仅监听本机；请勿把配置文件或含密钥的截图分享出去。</p>
+          <div class="form-actions end"><button class="button ghost" id="cancel-judge-model-bottom" type="button">取消</button><button class="button signal" type="submit">保存模型</button></div>
+        </form>
+      </section>
+
+      <section class="view" id="view-reports">
+        <div class="section-title"><div><p class="eyebrow">EVALUATION REPORTS</p><h1>评测报告</h1></div><p>报告固定关联被测对象、评测集、规则与执行证据，保证结果可追溯。</p></div>
+        <div class="report-actions-grid">
+          <a id="report-center-html" class="report-action" target="_blank"><b>HTML 完整报告</b><span>查看指标、单条用例、评分理由和截图证据</span><em>打开报告 ↗</em></a>
+          <a id="report-center-xlsx" class="report-action"><b>Excel 结果明细</b><span>下载回答、评分、失败原因和证据索引</span><em>导出 Excel ↓</em></a>
+        </div>
+        <div class="panel report-contract"><h2>一份报告包含什么</h2><div><span>运行快照<small>被测对象、版本、评测集和规则</small></span><span>总体指标<small>通过率、质量、耗时和执行状态</small></span><span>节点证据<small>回答、截图、Trace 与工具调用</small></span><span>闭环动作<small>归因、加入 Bad Case 和发起回归</small></span></div></div>
+      </section>
+
+      <section class="view" id="view-bad-cases">
+        <div class="section-title"><div><p class="eyebrow">FAILURE LEDGER</p><h1>Bad Case</h1></div><p>集中查看当前项目未通过或执行失败的记录。</p></div>
+        <div id="bad-case-list" class="case-list"><div class="panel empty-state"><p>进入页面后加载失败记录。</p></div></div>
+      </section>
+
+      <section class="view" id="view-root-cause">
+        <div class="section-title"><div><p class="eyebrow">ROOT CAUSE</p><h1>失败归因</h1></div><p>从失败用例下钻到回答、截图或具体 Trace 节点。</p></div>
+        <div class="analysis-entry-grid">
+          <button class="action-card" type="button" data-jump="runs"><span>回答与截图证据</span><small>查看 Playwright 执行记录、评分维度和完整对话</small></button>
+          <button class="action-card" type="button" data-jump="agent"><span>Agent 调用链路</span><small>检查模型调用、工具参数、调用顺序和节点输出</small></button>
+          <button class="action-card" type="button" data-jump="bad-cases"><span>失败用例清单</span><small>按任务结果集中查看未通过记录</small></button>
+        </div>
+      </section>
+
+      <section class="view" id="view-compare">
+        <div class="section-title"><div><p class="eyebrow">VERSION COMPARISON</p><h1>版本对比</h1></div><p>使用相同测试集比较模型、Prompt 或 Agent 版本。</p></div>
+        <div class="panel empty-state compact-empty"><span>⇄</span><h2>需要至少两个可比较批次</h2><p>完成新版本跑测后，可按新增通过、新增失败、持续失败和已修复进行比较。</p><button class="button signal" type="button" data-jump="run-setup">创建候选版本跑测</button></div>
+      </section>
+
+      <section class="view" id="view-regression">
+        <div class="section-title"><div><p class="eyebrow">REGRESSION LOOP</p><h1>回归验证</h1></div><p>把已确认的失败用例加入评测集，修复后重新执行并对比结果。</p></div>
+        <div class="regression-steps panel"><span><b>1</b>确认失败原因</span><i>→</i><span><b>2</b>加入 Bad Case</span><i>→</i><span><b>3</b>发布新版本</span><i>→</i><span><b>4</b>重新跑测</span><i>→</i><span><b>5</b>确认无回退</span></div>
+        <div class="form-actions"><button class="button ghost" type="button" data-jump="bad-cases">查看 Bad Case</button><button class="button signal" type="button" data-jump="run-setup">创建回归任务</button></div>
+      </section>
+
+      <section class="view" id="view-rules">
+        <div class="section-title"><div><p class="eyebrow">REUSABLE RULES</p><h1>评测规则</h1></div><p>规则独立于执行任务；新建跑测时至少选择一项。</p></div>
+        <div class="rule-grid">
+          <article><b>回答质量</b><p>正确性、相关性、完整性、忠实度与拒答边界。</p><span>规则检查 · LLM 评判</span></article>
+          <article><b>RAG 检索</b><p>上下文召回率、精确率、证据覆盖和引用一致性。</p><span>需要 Top-K 证据</span></article>
+          <article><b>Agent 过程</b><p>工具选择、参数、调用顺序、重试与恢复。</p><span>需要 Trace 或调用日志</span></article>
+          <article><b>最终产物</b><p>文件存在、视频时长、JSON 字段或外部状态。</p><span>需要产物验证器</span></article>
+        </div>
+        <div class="panel current-rule"><div><h2>当前项目评分要求</h2><p id="rules-summary">尚未填写评分要求。</p></div><button class="button ghost" type="button" data-jump="brief">编辑能力资料与评分要求</button></div>
+      </section>
+
+      <section class="view" id="view-brief">
+        <div class="portfolio-head"><div><p class="eyebrow">CURRENT PROJECT DATASETS</p><h2>当前项目的评测集</h2></div><div class="dataset-head-actions"><button class="button ghost" id="import-dataset" type="button">导入 Excel</button><button class="button signal" id="new-dataset" type="button">新建评测集</button><button class="project-danger" id="delete-all-datasets" type="button">清空本项目评测集</button></div></div>
+        <p class="dataset-scope-note">这里只展示顶部“当前项目”中的评测集。发布目前只标记审核状态，不锁定用例，也不会自动限制跑测；删除会二次确认。</p>
+        <div id="dataset-list" class="dataset-list"></div>
+        <div class="section-title dataset-profile-title"><div><p class="eyebrow">PROJECT SOURCE OF TRUTH</p><h1>项目能力资料</h1></div><p>这些资料用于生成候选用例和设置项目级评分边界。</p></div>
+        <div class="brief-layout">
+          <form id="brief-form" class="panel brief-form">
+            <label>项目名称<input name="name" required></label>
+            <label>Agent 背景<textarea name="background" rows="4" placeholder="服务对象、核心场景、使用环境……"></textarea></label>
+            <label>能力范围<textarea name="capabilities" rows="4" placeholder="当前支持的查询与操作，一项一行更清晰"></textarea></label>
+            <label>限制与边界<textarea name="boundaries" rows="4" placeholder="权限限制、禁止行为、必须追问的条件……"></textarea></label>
+            <label>评分标准<textarea name="scoring_standard" rows="5" placeholder="通过门槛、必答要点、严重错误判定……"></textarea></label>
+            <div class="form-actions"><button class="button ink" type="submit">保存资料</button><button class="button ghost" type="button" id="ask-questions">检查还缺什么</button></div>
+          </form>
+          <aside class="question-stack">
+            <div class="panel question-intro"><span class="question-glyph">?</span><div><h2>测试集访谈</h2><p>pi Agent 会根据资料缺口继续追问。补齐后，再通过工具提交候选用例。</p><span id="pi-mode" class="runtime-chip">PI · CONNECTING</span></div></div>
+            <div id="questions"></div>
+            <button class="button signal full" id="generate-cases">生成候选测试集</button>
+          </aside>
+        </div>
+      </section>
+
+      <section class="view" id="view-cases">
+        <div class="section-title"><div><p class="eyebrow">HUMAN IN THE LOOP</p><h1 id="case-page-title">测试用例</h1><span class="active-dataset-label">当前评测集：<b id="case-dataset-name">未选择</b></span></div><p id="case-page-description">编辑输入、预期回答、工具要求与执行方式。</p></div>
+        <div class="toolbar panel compact">
+          <div class="filters"><button class="filter active" data-filter="all">全部</button><button class="filter" data-filter="pending">待审核</button><button class="filter" data-filter="approved">已审核</button></div>
+          <div class="toolbar-actions"><button class="button ghost" id="import-excel" type="button">导入 Excel</button><button class="button ghost" id="new-case" type="button">新增用例</button><button class="button ink run-all">执行已审核用例</button></div>
+        </div>
+        <div class="case-selection-bar" id="case-selection-bar">
+          <label><input id="select-visible-cases" type="checkbox"><span>选择当前列表</span></label>
+          <span id="selected-case-count">未选择用例</span>
+          <button type="button" id="clear-case-selection">取消选择</button>
+          <button class="danger-action" type="button" id="delete-selected-cases" disabled>删除所选</button>
+        </div>
+        <div id="case-list" class="case-list"></div>
+      </section>
+
+      <section class="view" id="view-runs">
+        <div class="section-title"><div><p class="eyebrow">EVIDENCE TRAIL</p><h1>运行任务</h1></div><p>点击记录查看逐轮对话、截图、工具调用和评分依据。</p></div>
+        <div class="runs-layout">
+          <div class="panel compact run-list-panel"><div class="run-list-head"><span>最近执行</span><button class="icon-button" id="refresh-runs" aria-label="刷新">↻</button></div><div id="run-list" class="run-list"></div></div>
+          <article id="run-detail" class="panel evidence-panel"><div class="empty-state"><span>⌁</span><h2>选择一条执行记录</h2><p>这里会展示完整对话与评分证据。</p></div></article>
+        </div>
+      </section>
+      <section class="view" id="view-agent">
+        <div class="section-title"><div><p class="eyebrow">LANGFUSE · PROCESS EVALUATION</p><h1>Agent 链路跑测</h1></div><p>先看内部怎么执行，再判断是否符合任务要求；RAG 回答评测保持独立。</p></div>
+        <form id="agent-trace-form" class="panel agent-import">
+          <div class="agent-import-heading"><h2>读取一次任务的链路</h2><span id="agent-langfuse-status">正在检查配置…</span></div>
+          <div class="agent-import-fields">
+            <label>Langfuse Trace ID<input id="agent-trace-id" required placeholder="粘贴这次任务的 Trace ID，不是网页链接" autocomplete="off"></label>
+            <label>关联评测集（可选）<select id="agent-set-id"><option value="">不关联，单独评测</option></select></label>
+            <label>关联测试用例<select id="agent-case-id" disabled><option value="">正在加载当前评测集的用例…</option></select></label>
+            <button class="button signal" id="agent-import-button" type="submit">读取 Trace</button>
+          </div>
+          <p id="agent-case-preview" class="agent-muted" aria-live="polite"></p>
+          <button id="agent-link-case" class="button ghost" type="button" hidden>将所选用例要求载入当前任务</button>
+          <details class="agent-options"><summary>读取范围 / 离线导入</summary><div class="two-col"><label>开始时间（默认近 30 天）<input id="agent-from" type="datetime-local"></label><label>结束时间（默认现在）<input id="agent-to" type="datetime-local"></label></div><label>导入 Langfuse JSON<input id="agent-json-file" type="file" accept=".json,application/json"><small>支持完整 Trace（含 observations）或节点列表（data）；节点列表需要先填写 Trace ID。</small></label></details>
+          <p class="privacy-note">密钥只在后台 .env 配置。读取后保存脱敏副本；同一个项目、来源和 Trace ID 重新读取会更新链路，并清除旧评测结论。</p>
+          <p id="agent-import-error" role="alert" hidden></p>
+        </form>
+        <div class="agent-workbench">
+          <aside class="panel agent-history"><div class="run-list-head"><b>已读取的任务</b><button id="agent-refresh" class="icon-button" type="button" aria-label="刷新 Agent 评测记录">↻</button></div><div id="agent-history-list"><p class="agent-empty">还没有链路。请先读取一条 Trace。</p></div></aside>
+          <div id="agent-task-detail" class="panel agent-task"><div class="empty-state"><h2>选择或读取一条 Trace</h2><p>这里会展示用户提问、模型调用、工具执行和最终回复。</p></div></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="case-dialog">
+    <form method="dialog" id="case-form">
+      <div class="dialog-head"><div><p class="eyebrow">CASE REVIEW</p><h2>审核测试用例</h2></div><button value="cancel" class="icon-button">×</button></div>
+      <input type="hidden" name="id">
+      <label>问题 <small>Playwright 会把这段内容发送给被测 Agent</small><textarea name="query" rows="3"></textarea></label>
+      <label>预期回答 / 回复要求 <small>测试 Agent 将据此判断回答是否合格</small><textarea name="expected_answer" rows="5"></textarea></label>
+      <fieldset class="expected-trace-fields"><legend>预期执行轨迹 <small>Agent 过程评测使用；不要求每个用例都填写</small></legend>
+        <label>必需工具 <small>多个工具用逗号分隔；执行链路可自动检查</small><input name="required_tools" placeholder="例如：video_understand, video_trim"></label>
+        <label class="trace-order"><input type="checkbox" name="tool_ordered"> 按填写顺序调用</label>
+        <label>禁止工具 <small>用于审核，当前不会自动判分</small><input name="forbidden_tools" placeholder="例如：video_speed"></label>
+        <div class="two-col"><label>参数约束 <small>具体说明需要核对的参数</small><textarea name="parameter_constraints" rows="2" placeholder="例如：start=4 秒，end=原片末尾"></textarea></label><label>最多调用工具次数<input name="max_tool_calls" type="number" min="0" placeholder="可留空"></label></div>
+        <label>其他过程要求<textarea name="trace_notes" rows="2" placeholder="例如：先理解视频，再决定是否编辑"></textarea></label>
+      </fieldset>
+      <details class="advanced-settings"><summary>高级设置（可选）</summary>
+        <label>用例分类<input name="category" placeholder="例如：基础能力"></label>
+        <div class="two-col"><label>标题<input name="title"></label><label>优先级<select name="priority"><option>P0</option><option>P1</option><option>P2</option></select></label></div>
+        <div class="two-col"><label>执行类型<select name="execution_type"><option value="browser">浏览器对话</option><option value="dialogue">对话 API</option><option value="hybrid">混合流程</option></select></label><label>起始页面<input name="start_url" type="url"></label></div>
+        <label>必答关键词 <small>可留空，由测试 Agent 进行语义判断</small><input name="expected_keywords"></label>
+        <label>禁止内容<input name="forbidden_keywords"></label>
+        <label>浏览器步骤<textarea name="browser_steps" rows="3" placeholder="第一阶段仅使用默认对话流程，可留空"></textarea></label>
+      </details>
+      <details id="case-source-fields-wrap" class="advanced-settings" hidden><summary>导入的原始字段</summary><div id="case-source-fields"></div></details>
+      <label class="approve-check"><input type="checkbox" name="approved"> <span>确认问题和预期回答，标记为已审核</span></label>
+      <div class="form-actions end"><button value="cancel" class="button ghost">取消</button><button value="default" class="button signal" id="save-case">保存用例</button></div>
+    </form>
+  </dialog>
+  <dialog id="browser-ready-dialog">
+    <form method="dialog">
+      <div class="dialog-head office-plan-head"><div><p class="eyebrow">OFFICE RUN PLAN</p><h2>确认执行目标与测试用例</h2><p>有办公室字段时自动分组并切换；没有办公室字段时，在你当前手动打开的 Office / Agent 中执行。</p></div></div>
+      <fieldset class="office-mode-picker" id="office-run-mode">
+        <legend>进入 Office 的方式</legend>
+        <label><input type="radio" name="office_run_mode" value="auto" checked><span><b>自动匹配 Office</b><small>按 Excel 中的行业、岗位等字段匹配 Office 名称，自动切换并进入 Agent。</small></span></label>
+        <label><input type="radio" name="office_run_mode" value="manual"><span><b>手动进入 Office</b><small>你先手动打开目标 Agent；系统只负责新建会话、执行用例、等待回复和截图。</small></span></label>
+      </fieldset>
+      <div class="office-plan-tools"><span id="run-scope-summary">正在读取办公室分组…</span><button type="button" id="select-all-run-cases">全部选择</button><button type="button" id="clear-run-cases">全部清空</button></div>
+      <div class="office-plan-grid office-plan-columns" aria-hidden="true"><b>执行目标</b><b>自动识别分组</b><b>对应测试用例</b></div>
+      <div id="office-run-plan" class="office-run-plan"></div>
+      <p class="privacy-note" id="office-mode-note">自动模式会保存实际 Office 名称和可选直达地址。点击开始之前不会发送问题。</p>
+      <div class="form-actions end"><button value="cancel" class="button ghost">暂不执行</button><button value="default" class="button signal" id="confirm-browser-run">保存映射并开始执行</button></div>
+    </form>
+  </dialog>
+  <dialog id="browser-progress-dialog">
+    <div class="progress-shell">
+      <div class="dialog-head"><div><p class="eyebrow">EVALUATION RUN</p><h2>正在执行浏览器评测</h2></div></div>
+      <div class="progress-count"><strong id="job-progress-count">0 / 0</strong><span id="job-progress-percent">0%</span></div>
+      <div class="job-progress"><i id="job-progress-bar"></i></div>
+      <div class="job-current"><span id="job-current-code">准备中</span><b id="job-current-title"></b><p id="job-stage">正在创建执行任务…</p></div>
+      <div class="job-stats"><span>通过 <b id="job-passed">0</b></span><span>未通过/失败 <b id="job-failed">0</b></span></div>
+      <p class="privacy-note">暂停会在当前用例完成后生效，避免截断 Agent 正在生成的回复。</p>
+      <div class="form-actions end"><button class="button ghost" type="button" id="toggle-job-pause">当前用例完成后暂停</button><button class="button ink" type="button" id="close-job-progress" disabled>完成并查看结果</button></div>
+    </div>
+  </dialog>
+  <dialog id="project-dialog">
+    <form method="dialog" id="project-form">
+      <div class="dialog-head"><div><p class="eyebrow">NEW AGENT PROJECT</p><h2>新建 Agent 评测项目</h2></div><button type="button" class="icon-button" data-close-dialog aria-label="关闭新建项目窗口">×</button></div>
+      <label>Agent / 项目名称<input name="name" required placeholder="例如：小红书 CCO 评测"></label>
+      <label>项目代码 <small>用于区分测试用例编号，例如 XHS-001</small><input name="project_key" required maxlength="16" placeholder="例如：XHS"></label>
+      <label>Office 页面地址 <small>后续也可修改</small><input name="start_url" type="url" placeholder="https://your-agent.example.com/office?officeId=..."></label>
+      <div class="form-actions end"><button type="button" class="button ghost" data-close-dialog>取消</button><button type="submit" class="button signal" id="create-project">创建并切换</button></div>
+    </form>
+  </dialog>
+  <dialog id="dataset-dialog">
+    <form method="dialog" id="dataset-form">
+      <div class="dialog-head"><div><p class="eyebrow">EVALUATION SET</p><h2 id="dataset-dialog-title">新建评测集</h2></div><button type="button" class="icon-button" data-close-dialog aria-label="关闭评测集窗口">×</button></div>
+      <input type="hidden" name="id">
+      <label>评测集名称<input name="name" required maxlength="80" placeholder="例如：黄金测试集、RAG异常场景"></label>
+      <label>说明 <small>可选</small><textarea name="description" rows="3" placeholder="说明覆盖范围或使用场景"></textarea></label>
+      <div class="form-actions end"><button type="button" class="button ghost" data-close-dialog>取消</button><button type="submit" class="button signal" id="save-dataset">保存评测集</button></div>
+    </form>
+  </dialog>
+  <dialog id="import-dialog" class="import-dialog">
+    <form method="dialog" id="import-form">
+      <div class="dialog-head"><div><p class="eyebrow">IMPORT TEST SET</p><h2>导入 Excel 测试集</h2></div><button type="button" class="icon-button import-cancel" aria-label="关闭导入窗口">×</button></div>
+      <div class="import-project-context">导入到当前项目：<b id="import-current-project">—</b></div>
+      <div class="import-project-context">导入到当前评测集：<b id="import-current-dataset">—</b></div>
+      <div class="import-schema-note"><b>Excel 必填字段</b><span>用户输入</span><span>预期系统行为 / 黄金答案</span><small>其他列会随用例完整保留，并在用例详情中查看；旧版 Office 测试集字段仍可导入。</small></div>
+      <label class="file-drop">Excel 测试集<input id="excel-file" name="excel_file" type="file" accept=".xlsx" required><small>选择文件后先预览识别到的用例工作表；非用例说明页会忽略。</small></label>
+      <div id="import-schema-preview" class="import-schema-preview" hidden></div>
+      <p class="import-safety">用例会加入当前选中的评测集，不会另建同名评测集。若要分开管理，请先新建评测集并切换过去。</p>
+      <div class="form-actions end"><button type="button" class="button ghost import-cancel">取消</button><button value="default" class="button signal" id="confirm-import" disabled>开始导入</button></div>
+    </form>
+  </dialog>
+  <dialog id="batch-dialog" class="batch-dialog">
+    <div class="batch-detail-shell">
+      <div class="dialog-head"><div><p class="eyebrow">EVALUATION BATCH</p><h2 id="batch-detail-title">评测详情</h2></div><button type="button" class="icon-button" id="close-batch-detail">×</button></div>
+      <div id="batch-detail-content"></div>
+    </div>
+  </dialog>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="/static/app.js"></script>
+  <script src="/static/agent-evaluation.js"></script>
+</body>
+</html>

@@ -1,0 +1,62 @@
+# Dependencies and build output
+node_modules/
+dist/
+pi-agent/dist/
+
+# Local environment and secrets (keep the safe template)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*credentials*.json
+*secrets*.json
+*tokens*.json
+
+# Local databases and runtime state
+data/
+data/judge-models.local.json
+data/*.db
+data/*.db-*
+data/*.sqlite
+data/*.sqlite-*
+
+# Playwright login state and private browser artifacts
+data/playwright-profile/
+data/playwright-*-profile/
+data/auth/
+data/storage-state*.json
+data/screenshots/
+data/imports/
+data/videos/
+data/downloads/
+data/traces/
+artifacts/
+playwright-report/
+test-results/
+*.har
+
+# Generated evaluation reports and logs
+outputs/
+.codex-tmp/
+_artifact_build/
+_opc_flow_assets/
+tmp/
+reports/*.xlsx
+reports/*.csv
+reports/*.json
+reports/*.html
+reports/*.pdf
+*.log
+
+# Private, unrelated local job-application helpers
+scripts/job-application-package.py
+scripts/job-search-artifacts.mjs
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/settings.json
