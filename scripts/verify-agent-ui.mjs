@@ -15,7 +15,10 @@ try {
   let ready = false;
   for (let i = 0; i < 50; i++) { try { if ((await fetch(`${base}/api/health`)).ok) { ready = true; break; } } catch {} await new Promise(resolve => setTimeout(resolve, 100)); }
   assert.ok(ready);
-  browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH || "E:\\playwright-browsers\\chromium-1234\\chrome-win64\\chrome.exe", headless: true });
+  const browserTarget = process.env.PLAYWRIGHT_EXECUTABLE_PATH
+    ? { executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH }
+    : { channel: process.env.PLAYWRIGHT_CHANNEL || "chrome" };
+  browser = await chromium.launch({ ...browserTarget, headless: true });
   const page = await browser.newPage({ viewport: { width: 1440, height: 1050 } }), errors = [];
   page.on("pageerror", error => errors.push(error.message));
   await page.goto(base); await page.waitForFunction(() => document.querySelector("#project-select")?.options.length > 0);

@@ -8,11 +8,10 @@ import { chromium, type Browser, type BrowserContext, type Frame, type Locator, 
 import type { EvalCase } from "./domain.js";
 
 const ROOT = join(fileURLToPath(new URL("..", import.meta.url)), "..");
-const DEFAULT_EXECUTABLE = "E:\\playwright-browsers\\chromium-1234\\chrome-win64\\chrome.exe";
 const PROFILE_DIR = absolutePath(process.env.PLAYWRIGHT_PROFILE_DIR || "./data/playwright-profile");
 const SCREENSHOT_DIR = absolutePath(process.env.PLAYWRIGHT_SCREENSHOT_DIR || "./data/screenshots");
 const ARTIFACT_DIR = absolutePath(process.env.AGENT_EVAL_ARTIFACT_DIR || "./artifacts");
-const EXECUTABLE = process.env.PLAYWRIGHT_EXECUTABLE_PATH || DEFAULT_EXECUTABLE;
+const EXECUTABLE = resolveBrowserExecutable();
 const HEADLESS = /^true$/i.test(process.env.PLAYWRIGHT_HEADLESS || "false");
 const DEBUG_PORT = Number(process.env.PLAYWRIGHT_DEBUG_PORT || 9333);
 const DEBUG_URL = `http://127.0.0.1:${DEBUG_PORT}`;
@@ -42,7 +41,7 @@ let runQueue: Promise<unknown> = Promise.resolve();
 
 export function browserStatus(): Record<string, unknown> {
   return {
-    configured: existsSync(EXECUTABLE),
+    configured: Boolean(EXECUTABLE),
     connected: Boolean(context && browser?.isConnected()),
     executable: EXECUTABLE,
     profile_dir: PROFILE_DIR,
@@ -264,7 +263,7 @@ function safeSegment(value: string): string {
 async function ensureContext(): Promise<BrowserContext> {
   if (context && browser?.isConnected()) return context;
   if (launching) return launching;
-  if (!existsSync(EXECUTABLE)) throw new Error(`找不到 Playwright 浏览器：${EXECUTABLE}`);
+  if (!EXECUTABLE) throw new Error("找不到可用的 Chrome/Edge/Chromium。请安装浏览器，或在 .env 设置 PLAYWRIGHT_EXECUTABLE_PATH。");
   mkdirSync(PROFILE_DIR, { recursive: true });
   mkdirSync(SCREENSHOT_DIR, { recursive: true });
   launching = connectOrLaunch().catch((error) => {
@@ -276,6 +275,38 @@ async function ensureContext(): Promise<BrowserContext> {
     throw new Error(`测试浏览器启动失败：${message.split("\n")[0]}`);
   });
   return launching;
+}
+
+function resolveBrowserExecutable(): string {
+  const configured = (process.env.PLAYWRIGHT_EXECUTABLE_PATH || "").trim();
+  if (configured) return existsSync(configured) ? configured : "";
+
+  const chromeCandidates = process.platform === "win32" ? [
+    process.env.LOCALAPPDATA && join(process.env.LOCALAPPDATA, "Google", "Chrome", "Application", "chrome.exe"),
+    process.env.PROGRAMFILES && join(process.env.PROGRAMFILES, "Google", "Chrome", "Application", "chrome.exe"),
+    process.env["PROGRAMFILES(X86)"] && join(process.env["PROGRAMFILES(X86)"], "Google", "Chrome", "Application", "chrome.exe"),
+  ] : process.platform === "darwin" ? [
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+  ] : [
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+  ];
+  const edgeCandidates = process.platform === "win32" ? [
+    process.env.PROGRAMFILES && join(process.env.PROGRAMFILES, "Microsoft", "Edge", "Application", "msedge.exe"),
+    process.env["PROGRAMFILES(X86)"] && join(process.env["PROGRAMFILES(X86)"], "Microsoft", "Edge", "Application", "msedge.exe"),
+  ] : process.platform === "darwin" ? [
+    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+  ] : [
+    "/usr/bin/microsoft-edge",
+    "/usr/bin/microsoft-edge-stable",
+  ];
+  const candidates = /edge/i.test(process.env.PLAYWRIGHT_CHANNEL || "")
+    ? [...edgeCandidates, ...chromeCandidates]
+    : [...chromeCandidates, ...edgeCandidates];
+  return candidates.filter((candidate): candidate is string => Boolean(candidate)).find(existsSync) || "";
 }
 
 async function connectOrLaunch(): Promise<BrowserContext> {

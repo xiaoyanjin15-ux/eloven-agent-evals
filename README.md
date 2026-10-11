@@ -1,5 +1,28 @@
 # Agent 自动化评测系统
 
+面向对话类、RAG 和工具调用型 Agent 的本地自动化评测工作台，支持测试集管理、批量执行、证据采集、规则评分、LLM-as-a-Judge、Trace 分析、Bad Case 归因及 HTML/Excel 报告。
+
+## 快速开始
+
+准备环境：Git、Node.js 24+、npm 11+。只有使用浏览器自动执行功能时才需要本机安装 Chrome、Edge 或 Chromium。
+
+```powershell
+git clone https://github.com/xiaoyanjin15-ux/eloven-agent-evals.git
+Set-Location eloven-agent-evals
+npm ci
+npm run dev
+```
+
+打开 <http://127.0.0.1:8000>。不创建 `.env` 也可以启动并体验 Mock/Faux 完整流程；接入真实模型、Langfuse 或被测 Agent 时，再执行：
+
+```powershell
+Copy-Item .env.example .env
+```
+
+编辑本地 `.env`，填入自己的连接信息。`.env`、数据库、浏览器登录状态、截图和评测报告均已被 Git 忽略；不要把真实 Key 写进 `.env.example`、代码、截图或 Issue。
+
+Windows 用户也可以直接双击 `启动评测系统.cmd`：首次运行会自动执行 `npm ci`，以后会直接构建并启动服务。
+
 ## 工作台信息架构
 
 工作台按照评测闭环划分为四个一级模块；进入模块后，通过页面顶部的二级标签切换具体任务：
@@ -94,17 +117,26 @@ static/                评测工作台页面
 
 ## 启动
 
-需要 Node.js 24+。
+完整手动启动命令：
 
 ```powershell
-npm install
-npm run build
-npm start
+npm ci
+npm run dev
 ```
 
 打开 <http://127.0.0.1:8000>。
 
 Windows 下也可以直接双击项目根目录的 `启动评测系统.cmd`。需要使用有界面的 Playwright 浏览器时，建议采用该方式启动；由后台工具启动的服务可能只能创建浏览器进程，无法在桌面显示窗口。
+
+### 浏览器配置
+
+系统会自动查找常见安装位置中的 Chrome、Edge 或 Chromium，通常不需要设置路径。可在 `.env` 中用 `PLAYWRIGHT_CHANNEL=chrome` 或 `PLAYWRIGHT_CHANNEL=msedge` 调整优先顺序。只有使用便携版或自定义位置的浏览器时，才需要填写：
+
+```env
+PLAYWRIGHT_EXECUTABLE_PATH=<absolute-path-to-browser>
+```
+
+如果状态页提示没有找到浏览器，请确认浏览器已经安装，或将其实际可执行文件路径填入上述变量。
 
 ## pi Agent 模型
 
@@ -146,11 +178,7 @@ pi Agent 只开放四个结构化工具：
 
 ### Playwright 浏览器（当前推荐）
 
-适用于只能在已登录 Office 页面中使用、没有稳定公开 API 的 Agent。系统复用本机已经下载的 Chromium：
-
-```text
-E:\playwright-browsers\chromium-1234\chrome-win64\chrome.exe
-```
+适用于只能在已登录 Office 页面中使用、没有稳定公开 API 的 Agent。系统会自动复用本机安装的 Chrome、Edge 或 Chromium；自动查找失败时，按照“浏览器配置”一节设置 `PLAYWRIGHT_EXECUTABLE_PATH`。
 
 操作步骤：
 
@@ -224,6 +252,10 @@ npm test
 ```
 
 测试覆盖 pi 工具循环、规则评分、SQLite、HTTP API、Mock 执行、Office Agent 动态路由/JWT 和 Excel 报告。
+
+## License
+
+本项目采用 [MIT License](LICENSE)。
 
 
 ## 技术框架

@@ -41,7 +41,10 @@ try {
   const models = await fetch(modelUrl).then(response => response.json());
   assert.equal(models.filter(item => item.source === "builtin").length, 6);
   assert.equal(JSON.stringify(models).includes("fixture-only-key"), false);
-  browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH || "E:\\playwright-browsers\\chromium-1234\\chrome-win64\\chrome.exe", headless: true });
+  const browserTarget = process.env.PLAYWRIGHT_EXECUTABLE_PATH
+    ? { executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH }
+    : { channel: process.env.PLAYWRIGHT_CHANNEL || "chrome" };
+  browser = await chromium.launch({ ...browserTarget, headless: true });
   const page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
   const errors = []; page.on("pageerror", error => errors.push(error.message));
   await page.goto(base);
