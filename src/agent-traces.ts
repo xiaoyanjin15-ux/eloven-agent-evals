@@ -1,12 +1,22 @@
+export type CostSource = "langfuse" | "estimated" | "mixed" | null;
+export interface TraceUsage {
+  input_tokens: number | null; cache_read_input_tokens: number | null; cache_write_input_tokens: number | null;
+  total_input_tokens: number | null; output_tokens: number | null; total_tokens: number | null;
+  total_cost_usd: number | null; cost_source: CostSource; cost_note: string;
+}
 export interface TraceNode {
   id: string; parent_id: string | null; name: string; kind: "model" | "tool" | "step";
   model: string; start_time: string; end_time: string; duration_ms: number | null;
   input: unknown; output: unknown; level: string; status_message: string;
-  user_id: string; session_id: string; metadata: unknown;
+  user_id: string; session_id: string; metadata: unknown; usage: TraceUsage;
+}
+export interface TraceModelUsage extends TraceUsage { model: string; calls: number }
+export interface TraceSummary extends TraceUsage {
+  duration_ms: number | null; model_calls: number; models: TraceModelUsage[];
 }
 export interface AgentTrace {
   trace_id: string; name: string; user_id: string; session_id: string;
-  input: unknown; output: unknown; nodes: TraceNode[]; warnings: string[];
+  input: unknown; output: unknown; nodes: TraceNode[]; warnings: string[]; summary: TraceSummary;
 }
 export interface TraceExpectations {
   tools: Array<{ name: string; parameters?: Record<string, unknown> }>;
@@ -42,6 +52,102 @@ export function sanitize(value: unknown, depth = 0): unknown {
     [key, /authorization|api.?key|secret|password|access.?token|refresh.?token|cookie/i.test(key) ? "[已隐藏]" : sanitize(item, depth + 1)]));
   return value ?? null;
 }
+export const OFFICIAL_MODEL_PRICING = {
+  deepseek_flash: { currency: "USD", unit_tokens: 1_000_000,
+    off_peak: { input_cache_hit: 0.003, input_cache_miss: 0.15, output: 0.60 },
+    peak: { input_cache_hit: 0.006, input_cache_miss: 0.30, output: 1.20 },
+    note: "DeepSeek V4.1 Flash；deepseek-v4-flash 为兼容别名" },
+  claude_haiku_4_5: { currency: "USD", unit_tokens: 1_000_000, input: 1.00, output: 5.00,
+    cache_read: 0.10, cache_write_5m: 1.25, cache_write_1h: 2.00, note: "Claude Haiku 4.5 标准 API 价格" }
+} as const;
+function numeric(value: unknown): number | null {
+  const parsed = typeof value === "number" ? value : typeof value === "string" && value.trim() ? Number(value) : Number.NaN;
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+function firstNumeric(...values: unknown[]): number | null {
+  for (const value of values) { const parsed = numeric(value); if (parsed !== null) return parsed; }
+  return null;
+}
+function estimatedCost(modelValue: unknown, startValue: unknown, input: number | null, cacheRead: number | null,
+  cacheWrite: number | null, output: number | null) {
+  if (input === null && cacheRead === null && cacheWrite === null && output === null) return null;
+  const model = String(modelValue || "").toLowerCase();
+  if (/^(deepseek-v4-flash|deepseek-v4\.1-flash|deepseek-flash)$/.test(model)) {
+    const started = new Date(String(startValue || ""));
+    const day = started.getUTCDay(), hour = started.getUTCHours() + started.getUTCMinutes() / 60;
+    const peak = Number.isFinite(+started) && day >= 1 && day <= 5 && ((hour >= 1 && hour < 4) || (hour >= 6 && hour < 10));
+    const price = peak ? OFFICIAL_MODEL_PRICING.deepseek_flash.peak : OFFICIAL_MODEL_PRICING.deepseek_flash.off_peak;
+    return { value: (((input || 0) + (cacheWrite || 0)) * price.input_cache_miss
+        + (cacheRead || 0) * price.input_cache_hit + (output || 0) * price.output) / 1_000_000,
+      note: "DeepSeek 官方" + (peak ? "高峰" : "非高峰") + "单价估算；缓存写入按未命中计，法定节假日需以账单为准" };
+  }
+  if (/^(claude-haiku-4-5(?:-\d+)?)$/.test(model)) {
+    const price = OFFICIAL_MODEL_PRICING.claude_haiku_4_5;
+    return { value: ((input || 0) * price.input + (cacheRead || 0) * price.cache_read
+        + (cacheWrite || 0) * price.cache_write_5m + (output || 0) * price.output) / 1_000_000,
+      note: "Claude Haiku 4.5 官方标准价估算；缓存写入按 5 分钟 TTL 计" };
+  }
+  return null;
+}
+function observationUsage(item: Record<string, unknown>): TraceUsage {
+  const details = record(item.usageDetails);
+  const legacy = record(item.usage);
+  const costDetails = record(item.costDetails);
+  const rawInput = firstNumeric(details.input, details.prompt, details.input_tokens, item.inputUsage, legacy.input, legacy.promptTokens, legacy.prompt_tokens);
+  const cacheRead = firstNumeric(details.cache_read_input_tokens, details.cacheRead, details.cache_read,
+    details.prompt_cache_hit_tokens, record(details.input_tokens_details).cached_tokens,
+    legacy.cacheRead, legacy.cache_read_input_tokens, legacy.prompt_cache_hit_tokens, record(legacy.prompt_tokens_details).cached_tokens);
+  const cacheWrite = firstNumeric(details.cache_creation_input_tokens, details.cacheWrite, details.cache_write,
+    legacy.cacheWrite, legacy.cache_creation_input_tokens);
+  const output = firstNumeric(item.outputUsage, details.output, details.completion, details.output_tokens, legacy.output, legacy.completionTokens, legacy.completion_tokens);
+  const reportedTotal = firstNumeric(item.totalUsage, details.total, details.total_tokens, legacy.total, legacy.totalTokens, legacy.total_tokens);
+  // The Agent reports mutually exclusive input/cache buckets. Other providers may
+  // report total input plus a cached subset; use the total to avoid double counting.
+  const buckets = (rawInput || 0) + (cacheRead || 0) + (cacheWrite || 0) + (output || 0);
+  const input = rawInput !== null && reportedTotal !== null && buckets > reportedTotal
+    ? Math.max(0, rawInput - (cacheRead || 0) - (cacheWrite || 0)) : rawInput;
+  const totalInput = input === null && cacheRead === null && cacheWrite === null ? null
+    : (input || 0) + (cacheRead || 0) + (cacheWrite || 0);
+  const total = reportedTotal ?? (totalInput !== null && output !== null ? totalInput + output : null);
+  const recordedCost = firstNumeric(item.totalCost, costDetails.total, costDetails.total_cost, item.calculatedTotalCost);
+  const estimate = recordedCost === null ? estimatedCost(item.model, item.startTime, input, cacheRead, cacheWrite, output) : null;
+  return { input_tokens: input, cache_read_input_tokens: cacheRead, cache_write_input_tokens: cacheWrite,
+    total_input_tokens: totalInput, output_tokens: output, total_tokens: total,
+    total_cost_usd: recordedCost ?? estimate?.value ?? null, cost_source: recordedCost !== null ? "langfuse" : estimate ? "estimated" : null,
+    cost_note: recordedCost !== null ? "Langfuse 记录值" : estimate?.note || "" };
+}
+function sumRecorded(values: Array<number | null>): number | null {
+  const recorded = values.filter((value): value is number => value !== null);
+  return recorded.length ? recorded.reduce((sum, value) => sum + value, 0) : null;
+}
+function aggregateCostSource(items: TraceNode[]): CostSource {
+  const sources = new Set(items.map(node => node.usage.cost_source).filter((value): value is Exclude<CostSource, null> => value !== null));
+  return sources.size > 1 ? "mixed" : sources.values().next().value || null;
+}
+export function summarizeTrace(nodes: TraceNode[]): TraceSummary {
+  const complete = nodes.map(node => ({ start: Date.parse(node.start_time), end: Date.parse(node.end_time) }))
+    .filter(item => Number.isFinite(item.start) && Number.isFinite(item.end) && item.end >= item.start);
+  const duration = complete.length ? Math.max(...complete.map(item => item.end)) - Math.min(...complete.map(item => item.start)) : null;
+  const modelNodes = nodes.filter(node => node.kind === "model");
+  const groups = new Map<string, TraceNode[]>();
+  for (const node of modelNodes) {
+    const model = node.model || "未记录模型";
+    groups.set(model, [...(groups.get(model) || []), node]);
+  }
+  const summarize = (items: TraceNode[]) => ({
+    input_tokens: sumRecorded(items.map(node => node.usage.input_tokens)),
+    cache_read_input_tokens: sumRecorded(items.map(node => node.usage.cache_read_input_tokens)),
+    cache_write_input_tokens: sumRecorded(items.map(node => node.usage.cache_write_input_tokens)),
+    total_input_tokens: sumRecorded(items.map(node => node.usage.total_input_tokens)),
+    output_tokens: sumRecorded(items.map(node => node.usage.output_tokens)),
+    total_tokens: sumRecorded(items.map(node => node.usage.total_tokens)),
+    total_cost_usd: sumRecorded(items.map(node => node.usage.total_cost_usd)),
+    cost_source: aggregateCostSource(items),
+    cost_note: [...new Set(items.map(node => node.usage.cost_note).filter(Boolean))].join("；")
+  });
+  return { duration_ms: duration, model_calls: modelNodes.length, ...summarize(modelNodes),
+    models: [...groups].map(([model, items]) => ({ model, calls: items.length, ...summarize(items) })) };
+}
 export function normalizeTrace(traceId: string, observations: unknown[], envelope: unknown = {}): AgentTrace {
   if (!traceId || !observations.length) throw new Error("没有找到该 Trace 的调用节点；请确认 ID、时间范围，或稍后重新读取。");
   const warnings = new Set<string>();
@@ -64,7 +170,7 @@ export function normalizeTrace(traceId: string, observations: unknown[], envelop
       duration_ms: Number.isFinite(elapsed) && elapsed >= 0 ? elapsed : null,
       input: sanitize(parseIo(item.input)), output: sanitize(parseIo(item.output)),
       metadata: sanitize(parseIo(item.metadata)), level: String(item.level || "DEFAULT"),
-      status_message: String(sanitize(item.statusMessage || "")),
+      status_message: String(sanitize(item.statusMessage || "")), usage: observationUsage(item),
       user_id: String(item.userId || ""), session_id: String(item.sessionId || "") };
   });
   const byId = new Map(nodes.map(node => [node.id, node]));
@@ -96,7 +202,7 @@ export function normalizeTrace(traceId: string, observations: unknown[], envelop
     user_id: String(outer.userId || nodes.find(node => node.user_id)?.user_id || ""),
     session_id: String(outer.sessionId || nodes.find(node => node.session_id)?.session_id || ""),
     input: sanitize(parseIo(outer.input ?? root.input)), output: sanitize(parseIo(outer.output ?? root.output)),
-    nodes, warnings: [...warnings] };
+    nodes, warnings: [...warnings], summary: summarizeTrace(nodes) };
 }
 function subset(expected: unknown, actual: unknown): boolean {
   if (Array.isArray(expected)) return Array.isArray(actual) && expected.length === actual.length && expected.every((item, i) => subset(item, actual[i]));

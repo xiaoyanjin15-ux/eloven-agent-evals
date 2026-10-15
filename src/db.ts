@@ -68,6 +68,15 @@ export function initDb(): void {
       id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
       action TEXT NOT NULL, mode TEXT NOT NULL, trace_json TEXT NOT NULL DEFAULT '{}', output_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS agent_evaluation_groups (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      group_type TEXT NOT NULL CHECK(group_type IN ('evaluation_set','custom','uncategorized')),
+      evaluation_set_id INTEGER REFERENCES evaluation_sets(id) ON DELETE SET NULL,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      UNIQUE(project_id,evaluation_set_id)
+    );
     CREATE TABLE IF NOT EXISTS agent_evaluations (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -119,8 +128,23 @@ export function initDb(): void {
   ensureColumn("evaluation_batches", "evaluation_status", "TEXT NOT NULL DEFAULT 'completed'");
   ensureColumn("evaluation_batches", "result_workbook_path", "TEXT NOT NULL DEFAULT ''");
   database.exec("UPDATE projects SET project_key='PRJ-' || id WHERE trim(project_key)='' OR project_key IS NULL");
+  ensureColumn("agent_evaluations", "group_id", "INTEGER REFERENCES agent_evaluation_groups(id) ON DELETE SET NULL");
   migrateEvaluationSets();
+  migrateAgentEvaluationGroups();
   migrateLegacyRuns();
+}
+
+function migrateAgentEvaluationGroups(): void {
+  const timestamp = nowIso();
+  database.prepare(`INSERT INTO agent_evaluation_groups(project_id,name,group_type,created_at,updated_at)
+    SELECT DISTINCT a.project_id,?,'uncategorized',?,? FROM agent_evaluations a
+    WHERE a.group_id IS NULL AND NOT EXISTS
+      (SELECT 1 FROM agent_evaluation_groups g WHERE g.project_id=a.project_id AND g.group_type='uncategorized')`)
+    .run("未分类", timestamp, timestamp);
+  database.exec(`UPDATE agent_evaluations SET group_id=(
+    SELECT g.id FROM agent_evaluation_groups g
+    WHERE g.project_id=agent_evaluations.project_id AND g.group_type='uncategorized' ORDER BY g.id LIMIT 1)
+    WHERE group_id IS NULL`);
 }
 
 function migrateEvaluationSets(): void {

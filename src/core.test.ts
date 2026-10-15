@@ -170,16 +170,22 @@ test("TypeScript pi server completes the main API flow", async () => {
     const reimported = await jsonPost(agentPath, traceBody).then(response => response.json()) as { id: number; result: object };
     assert.equal(reimported.id, agentEval.id); assert.deepEqual(reimported.result, {});
     assert.equal((await fetch(agentPath).then(response => response.json()) as unknown[]).length, 1);
+    const baseGroups = await fetch(base + "/api/projects/" + projectId + "/agent-evaluation-groups").then(response => response.json()) as Array<{ name: string; group_type: string; trace_count: number }>;
+    assert.equal(baseGroups.find(group => group.group_type === "uncategorized")?.name, "未分类");
+    assert.equal(baseGroups.find(group => group.group_type === "uncategorized")?.trace_count, 1);
     assert.equal((await fetch(`${base}/api/projects/${importedProject.id}/agent-evaluations/${agentEval.id}`)).status, 404);
     const linkedTrace = await jsonPost(`${base}/api/projects/${importedProject.id}/agent-evaluations`, { ...traceBody, trace_id: "gold-case-trace",
-      observations: traceBody.observations.map(item => ({ ...item, traceId: "gold-case-trace" })), case_id: goldImport.cases[0].id });
+      observations: traceBody.observations.map(item => ({ ...item, traceId: "gold-case-trace" })), group_mode: "evaluation_set",
+      evaluation_set_id: goldSet.id, case_id: goldImport.cases[0].id });
     assert.equal(linkedTrace.status, 201);
-    const linkedExpectations = await linkedTrace.json() as { expectations: { tools: Array<{ name: string }>; ordered: boolean } };
+    const linkedExpectations = await linkedTrace.json() as { id: number; group_name: string; group_type: string; evaluation_set_id: number; expectations: { tools: Array<{ name: string }>; ordered: boolean } };
     assert.deepEqual(linkedExpectations.expectations.tools.map(tool => tool.name), ["video_understand", "video_trim"]);
     assert.equal(linkedExpectations.expectations.ordered, true);
-    const traceHistory = await fetch(`${base}/api/projects/${importedProject.id}/agent-evaluations`).then(r => r.json()) as Array<{ id: number }>;
-    const linkedPath = `${base}/api/projects/${importedProject.id}/agent-evaluations/${traceHistory[0].id}`;
-    const missingStandard = await jsonPost(`${linkedPath}/evaluate`, { tools: [], semantic: true, expected_answer: "完成任务" });
+    assert.equal(linkedExpectations.group_name, "视频黄金集");
+    assert.equal(linkedExpectations.group_type, "evaluation_set");
+    assert.equal(linkedExpectations.evaluation_set_id, goldSet.id);
+    const linkedPath = base + "/api/projects/" + importedProject.id + "/agent-evaluations/" + linkedExpectations.id;
+    const missingStandard = await jsonPost(linkedPath + "/evaluate", { tools: [], semantic: true, expected_answer: "完成任务" });
     assert.equal(missingStandard.ok, false);
     assert.match(await missingStandard.text(), /评分标准/);
     const linkResponse = await fetch(linkedPath, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ case_id: goldImport.cases[0].id, evaluation_set_id: goldSet.id }) });
@@ -189,6 +195,48 @@ test("TypeScript pi server completes the main API flow", async () => {
     assert.equal(loaded.expectations.parameter_constraints, "start=4秒");
     assert.equal(loaded.expectations.evaluation_set_id, goldSet.id);
     assert.deepEqual(loaded.result, {});
+    const customTrace = await jsonPost(base + "/api/projects/" + importedProject.id + "/agent-evaluations", { ...traceBody, trace_id: "custom-group-trace",
+      observations: traceBody.observations.map(item => ({ ...item, traceId: "custom-group-trace" })), case_id: null, group_mode: "custom", group_name: "Prompt 修改验证" })
+      .then(response => response.json()) as { id: number; group_name: string; group_type: string; evaluation_set_id: number | null };
+    assert.equal(customTrace.group_name, "Prompt 修改验证");
+    assert.equal(customTrace.group_type, "custom");
+    assert.equal(customTrace.evaluation_set_id, null);
+    const grouped = await fetch(base + "/api/projects/" + importedProject.id + "/agent-evaluation-groups").then(response => response.json()) as Array<{ id: number; name: string; group_type: string; trace_count: number }>;
+    assert.equal(grouped.find(group => group.name === "视频黄金集")?.trace_count, 1);
+    assert.equal(grouped.find(group => group.name === "Prompt 修改验证")?.trace_count, 1);
+    const goldGroupId = grouped.find(group => group.name === "视频黄金集")?.id;
+    const uncategorizedGroupId = grouped.find(group => group.group_type === "uncategorized")?.id;
+    assert.ok(goldGroupId); assert.ok(uncategorizedGroupId);
+    const movedTrace = await fetch(base + "/api/projects/" + importedProject.id + "/agent-evaluations/" + customTrace.id + "/group", {
+      method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ group_id: goldGroupId })
+    }).then(response => response.json()) as { group_name: string; group_type: string; case_id: number | null; result: object };
+    assert.equal(movedTrace.group_name, "视频黄金集");
+    assert.equal(movedTrace.group_type, "evaluation_set");
+    assert.equal(movedTrace.case_id, null);
+    const movedBack = await fetch(base + "/api/projects/" + importedProject.id + "/agent-evaluations/" + customTrace.id + "/group", {
+      method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ group_id: uncategorizedGroupId })
+    }).then(response => response.json()) as { group_type: string };
+    assert.equal(movedBack.group_type, "uncategorized");
+    const wrongGroup = await fetch(base + "/api/projects/" + importedProject.id + "/agent-evaluations/" + customTrace.id + "/group", {
+      method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ group_id: baseGroups[0] && 999999 })
+    });
+    assert.equal(wrongGroup.ok, false);
+    const deleteTrace = await jsonPost(base + "/api/projects/" + importedProject.id + "/agent-evaluations", {
+      ...traceBody, trace_id: "delete-local-trace", case_id: null,
+      observations: traceBody.observations.map(item => ({ ...item, traceId: "delete-local-trace" })), group_id: uncategorizedGroupId
+    }).then(response => response.json()) as { id: number };
+    const deleteResponse = await fetch(base + "/api/projects/" + importedProject.id + "/agent-evaluations/" + deleteTrace.id, { method: "DELETE" });
+    assert.equal(deleteResponse.status, 200);
+    assert.equal((await deleteResponse.json() as { deleted: boolean }).deleted, true);
+    assert.equal((await fetch(base + "/api/projects/" + importedProject.id + "/agent-evaluations/" + deleteTrace.id)).status, 404);
+    const deferredLink = await fetch(base + "/api/projects/" + importedProject.id + "/agent-evaluations/" + customTrace.id, { method: "PATCH",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ evaluation_set_id: goldSet.id, case_id: null, group_name: "视频理解回归" }) }).then(response => response.json()) as
+      { case_id: null; group_name: string; group_type: string; evaluation_set_id: number; expectations: { evaluation_set_id: number } };
+    assert.equal(deferredLink.case_id, null);
+    assert.equal(deferredLink.group_name, "视频理解回归");
+    assert.equal(deferredLink.group_type, "custom");
+    assert.equal(deferredLink.evaluation_set_id, goldSet.id);
+    assert.equal(deferredLink.expectations.evaluation_set_id, goldSet.id);
     const wrongSet = await fetch(linkedPath, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ case_id: goldImport.cases[0].id, evaluation_set_id: evaluationSet.id }) });
     assert.equal(wrongSet.ok, false);
     const wrongProjectCase = await fetch(linkedPath, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ case_id: cases[0].id }) });
@@ -223,6 +271,8 @@ test("TypeScript pi server completes the main API flow", async () => {
     const page = await fetch(base).then(response => response.text());
     for (const section of ["总览", "评测集管理", "跑测工作台", "根因分析"]) assert.ok(page.includes(section));
     assert.ok(page.includes('id="view-agent"')); assert.ok(page.includes('id="view-rag"')); assert.ok(page.includes("agent-evaluation.js"));
+    assert.ok(page.includes("暂不关联评测集"));
+    assert.ok(page.includes("Trace 分组"));
     const workbookData = await fetch(`${base}/reports/${projectId}.xlsx`).then((response) => response.arrayBuffer());
     const workbook = new Uint8Array(workbookData as ArrayBuffer);
     assert.deepEqual([...workbook.slice(0, 2)], [80, 75]);

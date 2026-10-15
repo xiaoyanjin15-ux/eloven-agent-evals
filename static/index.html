@@ -227,19 +227,23 @@
         <form id="agent-trace-form" class="panel agent-import">
           <div class="agent-import-heading"><h2>读取一次任务的链路</h2><span id="agent-langfuse-status">正在检查配置…</span></div>
           <div class="agent-import-fields">
-            <label>Langfuse Trace ID<input id="agent-trace-id" required placeholder="粘贴这次任务的 Trace ID，不是网页链接" autocomplete="off"></label>
-            <label>关联评测集（可选）<select id="agent-set-id"><option value="">不关联，单独评测</option></select></label>
-            <label>关联测试用例<select id="agent-case-id" disabled><option value="">正在加载当前评测集的用例…</option></select></label>
-            <button class="button signal" id="agent-import-button" type="submit">读取 Trace</button>
+            <label class="agent-trace-id-field">Langfuse Trace ID<input id="agent-trace-id" required placeholder="粘贴这次任务的 Trace ID，不是网页链接" autocomplete="off"></label>
+            <label>评测集关联<select id="agent-association-mode"><option value="none">暂不关联评测集</option><option value="evaluation_set">关联评测集</option></select></label>
+            <label id="agent-set-field" hidden>关联评测集<select id="agent-set-id"><option value="">请选择评测集</option></select></label>
+            <label id="agent-case-field" hidden>关联测试用例（可选）<select id="agent-case-id" disabled><option value="">正在加载当前评测集的用例…</option></select></label>
+            <label id="agent-group-field">Trace 分组<select id="agent-group-id"><option value="__auto__">未分类</option><option value="__new__">＋ 新建分组</option></select></label>
+            <label id="agent-group-name-field" hidden>新分组名称<input id="agent-group-name" maxlength="80" placeholder="例如：视频理解第一轮测试"></label>
+            <button class="button signal agent-import-action" id="agent-import-button" type="submit">读取 Trace</button>
           </div>
-          <p id="agent-case-preview" class="agent-muted" aria-live="polite"></p>
+          <p class="agent-muted agent-archive-tip">评测集决定采用哪套评测要求；Trace 分组只负责归档，两者可以独立选择。</p>
+          <p id="agent-case-preview" class="agent-muted" aria-live="polite" hidden></p>
           <button id="agent-link-case" class="button ghost" type="button" hidden>将所选用例要求载入当前任务</button>
           <details class="agent-options"><summary>读取范围 / 离线导入</summary><div class="two-col"><label>开始时间（默认近 30 天）<input id="agent-from" type="datetime-local"></label><label>结束时间（默认现在）<input id="agent-to" type="datetime-local"></label></div><label>导入 Langfuse JSON<input id="agent-json-file" type="file" accept=".json,application/json"><small>支持完整 Trace（含 observations）或节点列表（data）；节点列表需要先填写 Trace ID。</small></label></details>
           <p class="privacy-note">密钥只在后台 .env 配置。读取后保存脱敏副本；同一个项目、来源和 Trace ID 重新读取会更新链路，并清除旧评测结论。</p>
           <p id="agent-import-error" role="alert" hidden></p>
         </form>
         <div class="agent-workbench">
-          <aside class="panel agent-history"><div class="run-list-head"><b>已读取的任务</b><button id="agent-refresh" class="icon-button" type="button" aria-label="刷新 Agent 评测记录">↻</button></div><div id="agent-history-list"><p class="agent-empty">还没有链路。请先读取一条 Trace。</p></div></aside>
+          <aside class="panel agent-history"><div class="run-list-head"><b>已读取的任务</b><button id="agent-refresh" class="icon-button" type="button" aria-label="刷新 Agent 评测记录">↻</button></div><label class="agent-history-filter">查看分组<select id="agent-history-filter"><option value="">全部 Trace</option></select></label><div id="agent-history-list"><p class="agent-empty">还没有链路。请先读取一条 Trace。</p></div></aside>
           <div id="agent-task-detail" class="panel agent-task"><div class="empty-state"><h2>选择或读取一条 Trace</h2><p>这里会展示用户提问、模型调用、工具执行和最终回复。</p></div></div>
         </div>
       </section>

@@ -12,7 +12,7 @@ import { buildHtml, buildXlsx } from "./reports.js";
 import { attachCaseToEvaluationSet, clarifyProject, createEvaluationBatch, deleteCases, deleteEvaluationSet, evaluateCollectedBatch, finishEvaluationBatch, generateCasesWithPi, getEvaluationBatch, getRun, hydrateCase, importCasesFromExcel, inspectCasesExcel, listCases, listEvaluationBatches, listEvaluationSets, listOfficePlans, projectSummary, recordBrowserResult, runCases, saveOfficeMappings, seedCases } from "./services.js";
 import type { WorkflowMode } from "./domain.js";
 import { langfuseStatus } from "./langfuse.js";
-import { evaluateAgentTrace, getAgentEvaluation, importAgentTrace, listAgentEvaluations, linkAgentCase } from "./agent-evaluation-service.js";
+import { deleteAgentEvaluation, evaluateAgentTrace, getAgentEvaluation, importAgentTrace, listAgentEvaluationGroups, listAgentEvaluations, linkAgentCase, moveAgentEvaluation } from "./agent-evaluation-service.js";
 import { judgeModels, testJudgeModel } from "./judge-models.js";
 
 const ROOT = join(fileURLToPath(new URL("..", import.meta.url)), "..");
@@ -63,15 +63,22 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
       return sendJson(response, 200, { ok: true, message: "接口连通且返回文本；工具调用能力仍需通过实际评测验证" });
     }
   }
-  match = path.match(/^\/api\/projects\/(\d+)\/agent-evaluations(?:\/(\d+)(?:\/(evaluate))?)?$/);
+  match = path.match(/^\/api\/projects\/(\d+)\/agent-evaluation-groups$/);
+  if (match && method === "GET") {
+    const projectId = Number(match[1]); getProject(projectId);
+    return sendJson(response, 200, listAgentEvaluationGroups(projectId));
+  }
+  match = path.match(/^\/api\/projects\/(\d+)\/agent-evaluations(?:\/(\d+)(?:\/(evaluate|group))?)?$/);
   if (match) {
     const projectId = Number(match[1]); getProject(projectId);
     const id = Number(match[2]);
     if (id && !db.row("SELECT id FROM agent_evaluations WHERE id=? AND project_id=?", id, projectId)) throw new HttpError(404, "Agent 评测记录不存在");
     if (method === "GET" && !match[3]) return sendJson(response, 200, id ? getAgentEvaluation(projectId, id) : listAgentEvaluations(projectId));
     if (method === "PATCH" && id && !match[3]) return sendJson(response, 200, linkAgentCase(projectId, id, await readJson(request)));
+    if (method === "PATCH" && id && match[3] === "group") return sendJson(response, 200, moveAgentEvaluation(projectId, id, await readJson(request)));
+    if (method === "DELETE" && id && !match[3]) return sendJson(response, 200, deleteAgentEvaluation(projectId, id));
     if (method === "POST" && !id) return sendJson(response, 201, await importAgentTrace(projectId, await readJson(request, 20_000_000)));
-    if (method === "POST" && match[3]) return sendJson(response, 200, await evaluateAgentTrace(projectId, id, await readJson(request)));
+    if (method === "POST" && match[3] === "evaluate") return sendJson(response, 200, await evaluateAgentTrace(projectId, id, await readJson(request)));
   }
   if (method === "GET" && path === "/api/browser/status") return sendJson(response, 200, browserStatus());
   if (method === "POST" && path === "/api/browser/session") {

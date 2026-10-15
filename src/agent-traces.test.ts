@@ -25,6 +25,54 @@ test("normalizes raw I/O, identities and actual model/tool nodes", () => {
   assert.equal(trace.nodes.find(node => node.id === "model")?.model, "deepseek"); assert.deepEqual(trace.warnings, []);
   assert.equal(trace.nodes[0].id, "root");
 });
+test("summarizes wall-clock duration and estimates official model costs without TTFT", () => {
+  const trace = normalizeTrace("trace-1", [
+    obs("root", "chat", null, { startTime: "2026-09-14T01:00:00Z", endTime: "2026-09-14T01:00:05Z" }),
+    obs("m1", "model.invoke", "root", { type: "GENERATION", model: "deepseek-v4-flash", startTime: "2026-09-14T01:00:01Z", endTime: "2026-09-14T01:00:03Z",
+      usageDetails: { input: 100, output: 20, total: 120 } }),
+    obs("m2", "model.invoke", "root", { type: "GENERATION", model: "claude-haiku-4-5", startTime: "2026-09-14T01:00:03Z", endTime: "2026-09-14T01:00:05Z",
+      usage: { promptTokens: 80, completionTokens: 10, totalTokens: 90 } })
+  ]);
+  assert.equal(trace.summary.duration_ms, 5_000);
+  assert.equal(trace.summary.model_calls, 2);
+  assert.equal(trace.summary.input_tokens, 180);
+  assert.equal(trace.summary.output_tokens, 30);
+  assert.equal(trace.summary.total_tokens, 210);
+  assert.ok(Math.abs((trace.summary.total_cost_usd || 0) - 0.000184) < 1e-12);
+  assert.equal(trace.summary.cost_source, "estimated");
+  assert.deepEqual(trace.summary.models.map(item => ({ model: item.model, calls: item.calls, total: item.total_tokens })), [
+    { model: "deepseek-v4-flash", calls: 1, total: 120 },
+    { model: "claude-haiku-4-5", calls: 1, total: 90 }
+  ]);
+  const recorded = normalizeTrace("trace-1", [obs("root", "model.invoke", null, { type: "GENERATION", model: "deepseek-v4-flash",
+    usageDetails: { input: 100, output: 20 }, totalCost: 0.9 })]);
+  assert.equal(recorded.summary.total_cost_usd, 0.9);
+  assert.equal(recorded.summary.cost_source, "langfuse");
+});
+test("parses cache buckets and prices DeepSeek and Claude cache usage", () => {
+  const trace = normalizeTrace("trace-1", [
+    obs("root", "chat", null),
+    obs("deepseek", "model.invoke", "root", { type: "GENERATION", model: "deepseek-v4-flash",
+      usageDetails: { input: 25, output: 6, cache_read_input_tokens: 75, cache_creation_input_tokens: 0, total: 106 } }),
+    obs("claude", "model.invoke", "root", { type: "GENERATION", model: "claude-haiku-4-5",
+      usageDetails: { input: 20, output: 7, cache_read_input_tokens: 70, cache_creation_input_tokens: 10, total: 107 } })
+  ]);
+  assert.equal(trace.summary.input_tokens, 45);
+  assert.equal(trace.summary.cache_read_input_tokens, 145);
+  assert.equal(trace.summary.cache_write_input_tokens, 10);
+  assert.equal(trace.summary.total_input_tokens, 200);
+  assert.equal(trace.summary.total_tokens, 213);
+  assert.ok(Math.abs((trace.summary.models[0].total_cost_usd || 0) - 0.00001515) < 1e-12);
+  assert.ok(Math.abs((trace.summary.models[1].total_cost_usd || 0) - 0.0000745) < 1e-12);
+});
+test("does not double count providers whose input includes the cached subset", () => {
+  const trace = normalizeTrace("trace-1", [obs("model", "model.invoke", null, { type: "GENERATION", model: "deepseek-v4-flash",
+    usageDetails: { input: 100, output: 6, cache_read_input_tokens: 75, total: 106 } })]);
+  assert.equal(trace.summary.input_tokens, 25);
+  assert.equal(trace.summary.cache_read_input_tokens, 75);
+  assert.equal(trace.summary.total_input_tokens, 100);
+  assert.equal(trace.summary.total_tokens, 106);
+});
 test("rejects mixed traces, duplicate IDs, empty lists and cycles", () => {
   assert.throws(() => normalizeTrace("other", sample()), /不属于/);
   assert.throws(() => normalizeTrace("trace-1", [sample()[0], sample()[0]]), /重复/);
@@ -77,7 +125,8 @@ test("Langfuse v2 reads I/O, cursor pages and safe auth errors; v1 is explicit",
       return Response.json({ data: urls.length === 1 ? sample().slice(0, 2) : sample().slice(2), meta: { cursor: urls.length === 1 ? "next" : null } });
     }) as typeof fetch;
     assert.equal((await fetchLangfuseTrace("trace-1", undefined, undefined, fake)).nodes.length, 4);
-    assert.equal(urls.length, 2); assert.ok(new URL(urls[0]).searchParams.get("fields")?.includes("io"));
+    assert.equal(urls.length, 2); const fields = new URL(urls[0]).searchParams.get("fields") || "";
+    assert.ok(fields.includes("io")); assert.ok(fields.includes("usage")); assert.ok(!fields.includes("metrics"));
     assert.equal(new URL(urls[1]).searchParams.get("cursor"), "next");
     await assert.rejects(fetchLangfuseTrace("trace-1", undefined, undefined, (async () => new Response("secret", { status: 401 })) as typeof fetch), /认证失败/);
     await assert.rejects(fetchLangfuseTrace("trace-1", undefined, undefined, (async () => new Response("<html>")) as typeof fetch), /不是 JSON/);

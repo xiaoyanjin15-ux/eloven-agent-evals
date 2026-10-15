@@ -61,9 +61,9 @@ try {
   await page.waitForFunction(async ({ url, id }) => (await fetch(url).then(response => response.json())).find(item => item.is_default)?.id === id, { url: modelUrl, id: flash.id });
   assert.equal((await fetch(modelUrl).then(response => response.json())).find(item => item.is_default).id, flash.id);
   await page.locator('.section-tab[data-view="run-setup"]').click();
-  const gpt = models.find(item => item.model_id === "jinxiaoyan-gpt-5.5-yjs-ym");
+  const gpt = models.find(item => item.model_id === "gpt-5.5");
   await page.locator('#run-judge-model-select').selectOption(gpt.id);
-  await page.waitForFunction(async url => (await fetch(url).then(response => response.json())).find(item => item.is_default)?.model_id === "jinxiaoyan-gpt-5.5-yjs-ym", modelUrl);
+  await page.waitForFunction(async url => (await fetch(url).then(response => response.json())).find(item => item.is_default)?.model_id === "gpt-5.5", modelUrl);
   await page.locator('[data-view="judge-models"]').click();
   const screenshots = join(root, ".codex-tmp", "agent-ui-qa"); await mkdir(screenshots, { recursive: true });
   await page.screenshot({ path: join(screenshots, "builtin-models.png"), fullPage: true });

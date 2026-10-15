@@ -83,6 +83,8 @@ try {
   await page.waitForFunction(id => [...document.querySelector("#agent-case-id").options].some(item => item.value === String(id)), testCase.id);
   assert.equal(await page.locator("#agent-set-id").inputValue(), String(testSet.id));
   assert.equal(await page.locator("#agent-case-id").isEnabled(), true);
+  await page.locator("#agent-association-mode").selectOption("evaluation_set");
+  await page.waitForFunction(id => [...document.querySelector("#agent-case-id").options].some(item => item.value === String(id)), testCase.id);
   await page.locator("#agent-case-id").selectOption(String(testCase.id));
   const makeNode = (id, name, parent, extra = {}) => ({ id, name, traceId: "ui-trace", parentObservationId: parent, startTime: "2026-09-14T01:00:00Z", endTime: "2026-09-14T01:00:01Z", input: {}, output: {}, ...extra });
   const fixture = { id: "ui-trace", name: "裁剪视频前 4 秒", observations: [

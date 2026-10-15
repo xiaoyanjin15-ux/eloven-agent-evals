@@ -10,10 +10,10 @@ const DEFAULT_FILE = join(ROOT, "data", "judge-models.local.json");
 export const BUILTIN_JUDGE_MODEL_IDS = [
   "deepseek-v4-pro",
   "deepseek-v4-flash",
-  "jinxiaoyan-gpt-5.5-yjs-ym",
-  "jinxiaoyan-claude-opus-4.8-yjs-ym",
-  "jinxiaoyan-claude-sonnet-4.6-yjs-ym",
-  "jinxiaoyan-claude-haiku-4.5-yjs-ym",
+  "gpt-5.5",
+  "claude-opus-4-8",
+  "claude-sonnet-4-6",
+  "claude-haiku-4-5",
 ] as const;
 
 export interface JudgeModel {

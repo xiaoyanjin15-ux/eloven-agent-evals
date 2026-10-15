@@ -5,6 +5,20 @@ import { fetchLangfuseTrace } from "./langfuse.js";
 import { judgeModels } from "./judge-models.js";
 import type { Project } from "./domain.js";
 
+type AgentEvaluationGroup = {
+  id: number;
+  project_id: number;
+  name: string;
+  group_type: "evaluation_set" | "custom" | "uncategorized";
+  evaluation_set_id: number | null;
+};
+
+function projectById(id: number): Project {
+  const project = db.row<Project>("SELECT * FROM projects WHERE id=?", id);
+  if (!project) throw new Error("评测项目不存在");
+  return project;
+}
+
 function caseExpectations(projectId: number, caseId: number, setId = 0) {
   const item = db.row<{ expected_answer: string; expected_trace_json: string; query: string; evaluation_criteria: string }>(
     "SELECT expected_answer,expected_trace_json,query,evaluation_criteria FROM cases WHERE id=? AND project_id=?", caseId, projectId);
@@ -17,36 +31,139 @@ function caseExpectations(projectId: number, caseId: number, setId = 0) {
     scoring_standard: item.evaluation_criteria || projectById(projectId).scoring_standard });
 }
 
+function ensureUncategorizedGroup(projectId: number): AgentEvaluationGroup {
+  const existing = db.row<AgentEvaluationGroup>("SELECT * FROM agent_evaluation_groups WHERE project_id=? AND group_type='uncategorized' ORDER BY id LIMIT 1", projectId);
+  if (existing) return existing;
+  const timestamp = db.nowIso();
+  const id = db.execute("INSERT INTO agent_evaluation_groups(project_id,name,group_type,created_at,updated_at) VALUES(?,?,?,?,?)",
+    projectId, "未分类", "uncategorized", timestamp, timestamp);
+  return db.row<AgentEvaluationGroup>("SELECT * FROM agent_evaluation_groups WHERE id=?", id)!;
+}
+
+function evaluationSetGroup(projectId: number, setId: number): AgentEvaluationGroup {
+  const set = db.row<{ id: number; name: string }>("SELECT id,name FROM evaluation_sets WHERE id=? AND project_id=?", setId, projectId);
+  if (!set) throw new Error("请选择当前项目中的评测集");
+  const existing = db.row<AgentEvaluationGroup>("SELECT * FROM agent_evaluation_groups WHERE project_id=? AND evaluation_set_id=?", projectId, setId);
+  if (existing) {
+    if (existing.name !== set.name) db.execute("UPDATE agent_evaluation_groups SET name=?,updated_at=? WHERE id=?", set.name, db.nowIso(), existing.id);
+    return { ...existing, name: set.name };
+  }
+  const timestamp = db.nowIso();
+  const id = db.execute("INSERT INTO agent_evaluation_groups(project_id,name,group_type,evaluation_set_id,created_at,updated_at) VALUES(?,?,?,?,?,?)",
+    projectId, set.name, "evaluation_set", setId, timestamp, timestamp);
+  return db.row<AgentEvaluationGroup>("SELECT * FROM agent_evaluation_groups WHERE id=?", id)!;
+}
+
+function customGroup(projectId: number, body: Record<string, unknown>): AgentEvaluationGroup {
+  const groupId = Number(body.group_id || 0);
+  if (groupId) {
+    const group = db.row<AgentEvaluationGroup>("SELECT * FROM agent_evaluation_groups WHERE id=? AND project_id=?", groupId, projectId);
+    if (!group) throw new Error("所选分组不存在");
+    return group;
+  }
+  const name = String(body.group_name || "").trim();
+  if (!name) throw new Error("请填写自定义分组名称");
+  if (name.length > 80) throw new Error("自定义分组名称不能超过 80 个字符");
+  const existing = db.row<AgentEvaluationGroup>("SELECT * FROM agent_evaluation_groups WHERE project_id=? AND group_type='custom' AND name=?", projectId, name);
+  if (existing) return existing;
+  const timestamp = db.nowIso();
+  const id = db.execute("INSERT INTO agent_evaluation_groups(project_id,name,group_type,created_at,updated_at) VALUES(?,?,?,?,?)",
+    projectId, name, "custom", timestamp, timestamp);
+  return db.row<AgentEvaluationGroup>("SELECT * FROM agent_evaluation_groups WHERE id=?", id)!;
+}
+
+function resolveGroup(projectId: number, body: Record<string, unknown>): AgentEvaluationGroup {
+  const setId = Number(body.evaluation_set_id || 0);
+  if (setId && (!Number.isInteger(setId) || !db.row("SELECT id FROM evaluation_sets WHERE id=? AND project_id=?", setId, projectId))) {
+    throw new Error("请选择当前项目中的评测集");
+  }
+  if (body.group_id || body.group_name) return customGroup(projectId, body);
+  if (String(body.group_mode || "") === "uncategorized") return ensureUncategorizedGroup(projectId);
+  return setId ? evaluationSetGroup(projectId, setId) : ensureUncategorizedGroup(projectId);
+}
+
+export function listAgentEvaluationGroups(projectId: number) {
+  projectById(projectId);
+  ensureUncategorizedGroup(projectId);
+  return db.rows<Record<string, unknown>>(`SELECT g.id,g.name,g.group_type,g.evaluation_set_id,g.created_at,g.updated_at,
+    COUNT(a.id) trace_count,MAX(a.updated_at) latest_trace_at
+    FROM agent_evaluation_groups g
+    LEFT JOIN agent_evaluations a ON a.group_id=g.id
+    WHERE g.project_id=?
+    GROUP BY g.id
+    ORDER BY CASE g.group_type WHEN 'evaluation_set' THEN 1 WHEN 'custom' THEN 2 ELSE 3 END,
+      COALESCE(MAX(a.updated_at),g.updated_at) DESC,g.id DESC`, projectId);
+}
+
 export function linkAgentCase(projectId: number, id: number, body: Record<string, unknown>) {
   const saved = getAgentEvaluation(projectId, id);
-  const caseId = Number(body.case_id);
-  if (!Number.isInteger(caseId) || caseId <= 0) throw new Error("请选择测试用例");
+  const caseId = Number(body.case_id || 0);
+  const setId = Number(body.evaluation_set_id || 0);
+  if (!setId && (!Number.isInteger(caseId) || caseId <= 0)) throw new Error("请选择评测集或测试用例");
+  if (!caseId) {
+    if (saved.run_id) throw new Error("该链路已关联执行记录，不能移除其测试用例");
+    const group = resolveGroup(projectId, body);
+    const expectations = validateExpectations({ tools: [], evaluation_set_id: setId, scoring_standard: projectById(projectId).scoring_standard });
+    db.execute("UPDATE agent_evaluations SET case_id=NULL,group_id=?,expectations_json=?,result_json='{}',updated_at=? WHERE id=? AND project_id=?",
+      group.id, JSON.stringify(expectations), db.nowIso(), id, projectId);
+    return getAgentEvaluation(projectId, id);
+  }
+  if (!Number.isInteger(caseId) || caseId <= 0) throw new Error("请选择有效的测试用例");
   if (saved.run_id) {
     const run = db.row<{ case_id: number }>("SELECT case_id FROM runs WHERE id=? AND project_id=?", Number(saved.run_id), projectId);
     if (!run || run.case_id !== caseId) throw new Error("该链路已关联执行记录，不能改为其他用例");
   }
-  const expectations = caseExpectations(projectId, caseId, Number(body.evaluation_set_id || 0));
-  db.execute("UPDATE agent_evaluations SET case_id=?,expectations_json=?,result_json='{}',updated_at=? WHERE id=? AND project_id=?",
-    caseId, JSON.stringify(expectations), db.nowIso(), id, projectId);
+  const expectations = caseExpectations(projectId, caseId, setId);
+  const group = resolveGroup(projectId, body);
+  db.execute("UPDATE agent_evaluations SET case_id=?,group_id=?,expectations_json=?,result_json='{}',updated_at=? WHERE id=? AND project_id=?",
+    caseId, group.id, JSON.stringify(expectations), db.nowIso(), id, projectId);
   return getAgentEvaluation(projectId, id);
 }
 
-function projectById(id: number): Project {
-  const project = db.row<Project>("SELECT * FROM projects WHERE id=?", id);
-  if (!project) throw new Error("评测项目不存在");
-  return project;
-}
 export function listAgentEvaluations(projectId: number) {
   projectById(projectId);
-  return db.rows<Record<string, unknown>>("SELECT id,trace_id,source,case_id,run_id,created_at,updated_at,result_json FROM agent_evaluations WHERE project_id=? ORDER BY updated_at DESC,id DESC", projectId)
-    .map(({ result_json, ...item }) => ({ ...item, result: JSON.parse(String(result_json)) }));
+  ensureUncategorizedGroup(projectId);
+  return db.rows<Record<string, unknown>>(`SELECT a.id,a.trace_id,a.source,a.case_id,a.run_id,a.group_id,a.created_at,a.updated_at,a.result_json,a.expectations_json,
+    g.name group_name,g.group_type,g.evaluation_set_id group_evaluation_set_id,c.code case_code,c.title case_title
+    FROM agent_evaluations a
+    LEFT JOIN agent_evaluation_groups g ON g.id=a.group_id
+    LEFT JOIN cases c ON c.id=a.case_id
+    WHERE a.project_id=? ORDER BY a.updated_at DESC,a.id DESC`, projectId)
+    .map(({ result_json, expectations_json, ...item }) => {
+      const expectations = JSON.parse(String(expectations_json || "{}"));
+      const setId = Number(expectations.evaluation_set_id || 0);
+      return { ...item, evaluation_set_id: setId || null, result: JSON.parse(String(result_json)) };
+    });
+}
+export function moveAgentEvaluation(projectId: number, id: number, body: Record<string, unknown>) {
+  getAgentEvaluation(projectId, id);
+  const groupId = Number(body.group_id || 0);
+  if (!Number.isInteger(groupId) || groupId <= 0) throw new Error("请选择有效的目标分组");
+  const group = db.row<AgentEvaluationGroup>("SELECT * FROM agent_evaluation_groups WHERE id=? AND project_id=?", groupId, projectId);
+  if (!group) throw new Error("目标分组不属于当前项目");
+  db.execute("UPDATE agent_evaluations SET group_id=?,updated_at=? WHERE id=? AND project_id=?",
+    group.id, db.nowIso(), id, projectId);
+  return getAgentEvaluation(projectId, id);
+}
+export function deleteAgentEvaluation(projectId: number, id: number) {
+  getAgentEvaluation(projectId, id);
+  db.execute("DELETE FROM agent_evaluations WHERE id=? AND project_id=?", id, projectId);
+  return { deleted: true, id };
 }
 export function getAgentEvaluation(projectId: number, id: number) {
-  const item = db.row<Record<string, unknown>>("SELECT * FROM agent_evaluations WHERE id=? AND project_id=?", id, projectId);
+  const item = db.row<Record<string, unknown>>(`SELECT a.*,g.name group_name,g.group_type,g.evaluation_set_id group_evaluation_set_id,c.code case_code,c.title case_title
+    FROM agent_evaluations a
+    LEFT JOIN agent_evaluation_groups g ON g.id=a.group_id
+    LEFT JOIN cases c ON c.id=a.case_id
+    WHERE a.id=? AND a.project_id=?`, id, projectId);
   if (!item) throw new Error("Agent 评测记录不存在");
   const { trace_json, expectations_json, result_json, ...rest } = item;
-  return { ...rest, id: Number(item.id), case_id: item.case_id == null ? null : Number(item.case_id), run_id: item.run_id == null ? null : Number(item.run_id), trace: JSON.parse(String(trace_json)) as AgentTrace,
-    expectations: JSON.parse(String(expectations_json)), result: JSON.parse(String(result_json)) };
+  const expectations = JSON.parse(String(expectations_json || "{}"));
+  const setId = Number(expectations.evaluation_set_id || 0);
+  return { ...rest, id: Number(item.id), group_id: item.group_id == null ? null : Number(item.group_id),
+    evaluation_set_id: setId || null,
+    case_id: item.case_id == null ? null : Number(item.case_id), run_id: item.run_id == null ? null : Number(item.run_id),
+    trace: JSON.parse(String(trace_json)) as AgentTrace, expectations, result: JSON.parse(String(result_json)) };
 }
 export async function importAgentTrace(projectId: number, body: Record<string, unknown>) {
   projectById(projectId);
@@ -64,19 +181,24 @@ export async function importAgentTrace(projectId: number, body: Record<string, u
     if (trace.session_id && run.session_id && trace.session_id !== run.session_id) throw new Error("Trace 的 Session ID 与执行记录不一致，不能关联");
     caseId = run.case_id;
   }
-  const initialExpectations = caseId ? caseExpectations(projectId, caseId, Number(body.evaluation_set_id || 0)) : validateExpectations({ tools: [], scoring_standard: projectById(projectId).scoring_standard });
+  const associationSpecified = Object.prototype.hasOwnProperty.call(body, "association_mode") || Object.prototype.hasOwnProperty.call(body, "evaluation_set_id");
+  const setId = Number(body.evaluation_set_id || 0);
+  if (String(body.association_mode || "") === "evaluation_set" && !setId) throw new Error("请选择要关联的评测集");
+  const group = resolveGroup(projectId, body);
+  const initialExpectations = caseId ? caseExpectations(projectId, caseId, setId) : validateExpectations({ tools: [], evaluation_set_id: setId, scoring_standard: projectById(projectId).scoring_standard });
   const timestamp = db.nowIso();
   const existing = db.row<{ id: number }>("SELECT id FROM agent_evaluations WHERE project_id=? AND source=? AND trace_id=?", projectId, source, traceId);
   if (existing) {
     const previous = getAgentEvaluation(projectId, existing.id);
-    const changedCase = caseId && caseId !== previous.case_id;
+    const nextCaseId = associationSpecified ? caseId : (caseId || previous.case_id);
+    const changedCase = nextCaseId !== previous.case_id;
     if (changedCase && previous.run_id) throw new Error("该链路已关联执行记录，不能改为其他用例");
-    db.execute("UPDATE agent_evaluations SET trace_json=?,case_id=COALESCE(?,case_id),run_id=COALESCE(?,run_id),expectations_json=?,result_json='{}',updated_at=? WHERE id=?",
-      JSON.stringify(trace), caseId, runId, JSON.stringify(changedCase ? initialExpectations : previous.expectations), timestamp, existing.id);
-  }
-  else {
-    db.execute("INSERT INTO agent_evaluations(project_id,case_id,run_id,source,trace_id,trace_json,expectations_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
-      projectId, caseId, runId, source, traceId, JSON.stringify(trace), JSON.stringify(initialExpectations), timestamp, timestamp);
+    const expectations = associationSpecified || caseId ? initialExpectations : previous.expectations;
+    db.execute("UPDATE agent_evaluations SET trace_json=?,group_id=?,case_id=?,run_id=COALESCE(?,run_id),expectations_json=?,result_json='{}',updated_at=? WHERE id=?",
+      JSON.stringify(trace), group.id, nextCaseId, runId, JSON.stringify(expectations), timestamp, existing.id);
+  } else {
+    db.execute("INSERT INTO agent_evaluations(project_id,case_id,run_id,group_id,source,trace_id,trace_json,expectations_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+      projectId, caseId, runId, group.id, source, traceId, JSON.stringify(trace), JSON.stringify(initialExpectations), timestamp, timestamp);
   }
   const saved = db.row<{ id: number }>("SELECT id FROM agent_evaluations WHERE project_id=? AND source=? AND trace_id=?", projectId, source, traceId)!;
   return getAgentEvaluation(projectId, saved.id);
