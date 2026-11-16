@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { runHarness } from "../pi-agent/src/harness.js";
 import * as db from "./db.js";
 import { artifactFilePath, browserStatus, closeBrowser, openBrowserSession, screenshotFilePath } from "./browser-runner.js";
-import { getBrowserJob, pauseBrowserJob, resumeBrowserJob, startBrowserJob } from "./browser-jobs.js";
+import { getBrowserJob, pauseBrowserJob, resumeBrowserJob, startBrowserJob, stopBrowserJob } from "./browser-jobs.js";
 import type { EvalCase, OfficeAgentConfig, Project, TargetAdapter } from "./domain.js";
 import { buildHtml, buildXlsx } from "./reports.js";
 import { attachCaseToEvaluationSet, clarifyProject, createEvaluationBatch, deleteCases, deleteEvaluationSet, evaluateCollectedBatch, finishEvaluationBatch, generateCasesWithPi, getEvaluationBatch, getRun, hydrateCase, importCasesFromExcel, inspectCasesExcel, listCases, listEvaluationBatches, listEvaluationSets, listOfficePlans, projectSummary, recordBrowserResult, runCases, saveOfficeMappings, seedCases } from "./services.js";
@@ -91,12 +91,22 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
     const body = await readJson(request);
     const workflowMode: WorkflowMode = body.workflow_mode === "collect_first" ? "collect_first" : "live_eval";
     const officeMode = body.office_mode === "manual" ? "manual" : "auto";
-    return sendJson(response, 202, startBrowserJob(Number(body.project_id), Array.isArray(body.case_ids) ? body.case_ids.map(Number) : [], workflowMode, officeMode));
+    return sendJson(response, 202, startBrowserJob(Number(body.project_id), Array.isArray(body.case_ids) ? body.case_ids.map(Number) : [], workflowMode, officeMode, body.save_options as Parameters<typeof startBrowserJob>[4]));
+  }
+  match = path.match(/^\/api\/batches\/(\d+)\/files\/(\d+)$/);
+  if (match && method === "GET") {
+    const batch = db.row<{ result_files_json: string }>("SELECT result_files_json FROM evaluation_batches WHERE id=?", Number(match[1]));
+    const file = JSON.parse(batch?.result_files_json || "[]")[Number(match[2])] as { path: string } | undefined;
+    if (!file || !existsSync(file.path)) throw new HttpError(404, "结果文件不存在");
+    return sendFile(response, file.path);
   }
   match = path.match(/^\/api\/browser-jobs\/([^/]+)$/);
   if (match && method === "GET") return sendJson(response, 200, getBrowserJob(match[1]));
-  match = path.match(/^\/api\/browser-jobs\/([^/]+)\/(pause|resume)$/);
-  if (match && method === "POST") return sendJson(response, 200, match[2] === "pause" ? pauseBrowserJob(match[1]) : resumeBrowserJob(match[1]));
+  match = path.match(/^\/api\/browser-jobs\/([^/]+)\/(pause|resume|stop)$/);
+  if (match && method === "POST") {
+    const body = await readJson(request);
+    return sendJson(response, 200, match[2] === "pause" ? pauseBrowserJob(match[1]) : match[2] === "stop" ? stopBrowserJob(match[1]) : resumeBrowserJob(match[1], body.confirm_trial === true));
+  }
   match = path.match(/^\/api\/screenshots\/([^/]+)$/);
   if (match && method === "GET") {
     const screenshot = screenshotFilePath(match[1]);

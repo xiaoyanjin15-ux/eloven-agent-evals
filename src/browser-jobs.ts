@@ -3,10 +3,11 @@ import { randomUUID } from "node:crypto";
 import { activateBrowserOffice } from "./browser-runner.js";
 import { planConversationTurn } from "./conversation-plan.js";
 import * as db from "./db.js";
-import { createEvaluationBatch, finaliseCollectedWorkbook, finishEvaluationBatch, listCases, listOfficePlans, runCases } from "./services.js";
+import { createEvaluationBatch, finishEvaluationBatch, listCases, listOfficePlans, runCases } from "./services.js";
+import { IncrementalWorkbook, normaliseSaveOptions, type SaveOptions, type SavedWorkbook } from "./incremental-workbook.js";
 import type { Project, WorkflowMode } from "./domain.js";
 
-export type BrowserJobStatus = "queued" | "running" | "pausing" | "paused" | "completed" | "failed";
+export type BrowserJobStatus = "queued" | "running" | "pausing" | "paused" | "completed" | "failed" | "stopped";
 export type OfficeRunMode = "auto" | "manual";
 
 export interface BrowserJob {
@@ -16,6 +17,11 @@ export interface BrowserJob {
   workflow_mode: WorkflowMode;
   office_mode: OfficeRunMode;
   result_workbook_path?: string;
+  save_options: SaveOptions;
+  result_files: SavedWorkbook[];
+  awaiting_trial_confirmation: boolean;
+  stop_requested: boolean;
+  trial_results: Array<{ code: string; answer: string; screenshots: string[]; status: string }>;
   status: BrowserJobStatus;
   stage: string;
   total: number;
@@ -38,11 +44,12 @@ const jobs = new Map<string, BrowserJob>();
 const resumeWaiters = new Map<string, () => void>();
 
 export function startBrowserJob(projectId: number, caseIds: number[] = [], workflowMode: WorkflowMode = "live_eval",
-  officeMode: OfficeRunMode = "auto"): BrowserJob {
+  officeMode: OfficeRunMode = "auto", saveOptions: Partial<SaveOptions> = {}): BrowserJob {
+  if ([...jobs.values()].some(job => !["completed", "failed", "stopped"].includes(job.status))) throw new Error("已有浏览器任务正在执行或等待确认，请先完成或停止该任务");
+  const save_options = normaliseSaveOptions(saveOptions);
   const requested = new Set(caseIds);
   const approved = listCases(projectId).filter((item) => item.approved && (!caseIds.length || requested.has(item.id)));
-  const browserCases = approved.filter((item) => item.execution_type !== "dialogue");
-  const selected = (browserCases.length ? browserCases : approved).sort((left, right) =>
+  const selected = approved.sort((left, right) =>
     (left.office_name || "").localeCompare(right.office_name || "", "zh-CN") ||
     (left.conversation_group || "").localeCompare(right.conversation_group || "", undefined, { numeric: true }) ||
     left.conversation_round - right.conversation_round || left.source_row_number - right.source_row_number ||
@@ -62,6 +69,7 @@ export function startBrowserJob(projectId: number, caseIds: number[] = [], workf
     id: randomUUID(), project_id: projectId, batch_id: batchId, workflow_mode: workflowMode, office_mode: officeMode,
     status: "queued", stage: "准备执行", total: selected.length,
     completed: 0, passed: 0, failed: 0, pause_requested: false, created_at: now, updated_at: now,
+    save_options, result_files: [], awaiting_trial_confirmation: false, stop_requested: false, trial_results: [],
   };
   jobs.set(job.id, job);
   void executeJob(job, selected.map((item) => ({ id: item.id, code: item.code, title: item.title,
@@ -78,7 +86,7 @@ export function getBrowserJob(id: string): BrowserJob {
 
 export function pauseBrowserJob(id: string): BrowserJob {
   const job = requireActive(id);
-  if (["completed", "failed", "paused"].includes(job.status)) return snapshot(job);
+  if (["completed", "failed", "paused", "stopped"].includes(job.status)) return snapshot(job);
   job.pause_requested = true;
   job.status = "pausing";
   job.stage = "当前用例完成后暂停";
@@ -86,8 +94,11 @@ export function pauseBrowserJob(id: string): BrowserJob {
   return snapshot(job);
 }
 
-export function resumeBrowserJob(id: string): BrowserJob {
+export function resumeBrowserJob(id: string, confirmTrial = false): BrowserJob {
   const job = requireActive(id);
+  if (job.awaiting_trial_confirmation && !confirmTrial) throw new Error("请先确认前两条采集和 Excel 保存结果，再继续剩余用例");
+  if (["completed", "failed", "stopped"].includes(job.status)) return snapshot(job);
+  job.awaiting_trial_confirmation = false;
   job.pause_requested = false;
   if (job.status === "paused" || job.status === "pausing") {
     job.status = "running";
@@ -99,6 +110,17 @@ export function resumeBrowserJob(id: string): BrowserJob {
   return snapshot(job);
 }
 
+export function stopBrowserJob(id: string): BrowserJob {
+  const job = requireActive(id);
+  if (["completed", "failed", "stopped"].includes(job.status)) return snapshot(job);
+  job.stop_requested = true;
+  job.pause_requested = false;
+  job.awaiting_trial_confirmation = false;
+  resumeWaiters.get(id)?.(); resumeWaiters.delete(id);
+  job.stage = "正在停止，保留已保存结果";
+  touch(job); return snapshot(job);
+}
+
 async function executeJob(job: BrowserJob, cases: Array<{ id: number; code: string; title: string; office_key: string; office_name: string; start_url: string;
   case_type: "single_turn" | "multi_turn"; conversation_group: string; conversation_round: number }>): Promise<void> {
   try {
@@ -107,11 +129,16 @@ async function executeJob(job: BrowserJob, cases: Array<{ id: number; code: stri
     touch(job);
     const project = db.row<Project>("SELECT * FROM projects WHERE id=?", job.project_id);
     if (!project) throw new Error("评测项目不存在");
+    job.stage = "正在检查 Excel 来源、回填列和保存目录";
+    const writer = new IncrementalWorkbook(job.batch_id, job.id, job.save_options);
+    await writer.prepare(job.project_id, cases.map(item => item.id));
+    job.result_files = writer.files;
     const officePlans = new Map(listOfficePlans(job.project_id).map((item) => [item.office_key, item]));
     let activeOfficeKey = "";
     let activeConversationGroup = "";
     for (const item of cases) {
       if (job.pause_requested) await waitForResume(job);
+      if (job.stop_requested) break;
       if (job.office_mode === "auto" && item.office_key && item.office_key !== activeOfficeKey) {
         const plan = officePlans.get(item.office_key);
         if (!plan) throw new Error(`办公室分组不存在：${item.office_name}`);
@@ -135,41 +162,41 @@ async function executeJob(job: BrowserJob, cases: Array<{ id: number; code: stri
       const results = await runCases(job.project_id, [item.id], "browser", undefined, job.batch_id, job.workflow_mode,
         { newConversation: conversationPlan.newConversation });
       activeConversationGroup = conversationPlan.nextGroup;
-      const result = results[0] as { status?: string; passed?: number } | undefined;
+      const result = results[0];
+      if (!result) throw new Error("未返回执行结果");
+      job.stage = `正在保存 ${item.code} 到 Excel`;
+      touch(job);
+      await writer.write(item.id, result);
+      job.result_workbook_path = writer.files[0]?.url;
       job.completed += 1;
+      if (job.completed <= 2) {
+        const messages = result.messages as Array<{ role: string; content: string }> || [];
+        job.trial_results.push({ code: item.code, answer: [...messages].reverse().find(message => message.role === "assistant")?.content || String(result.summary || ""),
+          screenshots: Array.isArray(result.screenshot_paths) ? result.screenshot_paths.map(String) : [], status: String(result.status) });
+      }
       if (result?.status === "collected") { /* collected runs are neither pass nor fail until supplemental evaluation */ }
       else if (result?.status === "completed" && Number(result.passed)) job.passed += 1;
       else job.failed += 1;
       job.stage = `已完成 ${item.code}`;
       touch(job);
+      if (job.completed === 2 && job.total > 2 && !job.stop_requested) {
+        job.awaiting_trial_confirmation = true;
+        await waitForResume(job);
+      }
     }
-    if (job.workflow_mode === "collect_first") {
-      job.stage = "正在把截图回填到原始 Excel";
-      touch(job);
-      try { job.result_workbook_path = await finaliseCollectedWorkbook(job.batch_id); }
-      catch (error) { job.warning = error instanceof Error ? error.message : String(error); }
-    }
-    job.status = "completed";
-    job.stage = job.workflow_mode === "collect_first"
-      ? (job.result_workbook_path ? "采集完成，Excel 已生成，可稍后统一评测" : "采集完成；截图已保存，但 Excel 回填未生成")
-      : "全部用例执行完成";
+    job.status = job.stop_requested ? "stopped" : "completed";
+    job.stage = job.stop_requested ? "已停止，已完成用例的 Excel 已保留" : "全部用例已逐条保存到 Excel";
     delete job.current_case_id;
     delete job.current_code;
     delete job.current_title;
     delete job.current_office_key;
     delete job.current_office_name;
-    finishEvaluationBatch(job.batch_id, "completed");
+    finishEvaluationBatch(job.batch_id, job.stop_requested ? "stopped" : "completed");
     touch(job);
   } catch (error) {
     job.status = "failed";
     job.stage = "执行任务失败";
     job.error = error instanceof Error ? error.message : String(error);
-    if (job.workflow_mode === "collect_first" && job.completed > 0) {
-      try { job.result_workbook_path = await finaliseCollectedWorkbook(job.batch_id); }
-      catch (workbookError) {
-        job.warning = `已采集截图，但主结果表回填失败：${workbookError instanceof Error ? workbookError.message : String(workbookError)}`;
-      }
-    }
     finishEvaluationBatch(job.batch_id, "failed");
     touch(job);
   }
@@ -177,7 +204,7 @@ async function executeJob(job: BrowserJob, cases: Array<{ id: number; code: stri
 
 async function waitForResume(job: BrowserJob): Promise<void> {
   job.status = "paused";
-  job.stage = "已暂停，等待继续";
+  job.stage = job.awaiting_trial_confirmation ? "前两条已写入并保存 Excel，请确认效果后继续" : "已暂停，等待继续";
   touch(job);
   await new Promise<void>((resolve) => resumeWaiters.set(job.id, resolve));
 }

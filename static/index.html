@@ -286,6 +286,12 @@
         <label><input type="radio" name="office_run_mode" value="manual"><span><b>手动进入 Office</b><small>你先手动打开目标 Agent；系统只负责新建会话、执行用例、等待回复和截图。</small></span></label>
       </fieldset>
       <fieldset><legend>选择测试集（当前项目，可多选）</legend><div id="run-datasets"></div><button type="button" id="select-all-run-datasets">选择全部测试集</button><p>仅执行已审核用例；多个测试集中的相同用例只执行一次。</p></fieldset>
+      <fieldset class="result-save-options"><legend>逐条保存到 Excel</legend>
+        <label>结果保存目录<input id="result-directory" placeholder="留空：项目 artifacts 目录；或填写本机绝对路径"></label>
+        <label>回填起始列<input id="result-column" placeholder="例如 J；留空自动追加空白列" maxlength="3"></label>
+        <label>保存形式<select id="result-format"><option value="both">回答文字和截图</option><option value="text">回答文字</option><option value="screenshot">截图</option></select></label>
+        <p>每完成一条立即保存结果副本，原始测试集保留。选择“两者”时文字写入指定列、截图写入右侧一列。多个源文件分别保存。前两条保存后自动暂停，确认后继续；仅选 1～2 条时直接完成。</p>
+      </fieldset>
       <div class="office-plan-tools"><span id="run-scope-summary">正在读取办公室分组…</span><button type="button" id="select-all-run-cases">全部选择</button><button type="button" id="clear-run-cases">全部清空</button></div>
       <div class="office-plan-grid office-plan-columns" aria-hidden="true"><b>执行目标</b><b>自动识别分组</b><b>对应测试用例</b></div>
       <div id="office-run-plan" class="office-run-plan"></div>
@@ -301,8 +307,15 @@
       <div class="job-current"><span id="job-current-code">准备中</span><b id="job-current-title"></b><p id="job-stage">正在创建执行任务…</p></div>
       <div class="job-stats"><span>通过 <b id="job-passed">0</b></span><span>未通过/失败 <b id="job-failed">0</b></span></div>
       <p class="privacy-note">暂停会在当前用例完成后生效，避免截断 Agent 正在生成的回复。</p>
+      <div id="job-result-files"></div>
       <div class="form-actions end"><button class="button ghost" type="button" id="toggle-job-pause">当前用例完成后暂停</button><button class="button ink" type="button" id="close-job-progress" disabled>完成并查看结果</button></div>
     </div>
+  </dialog>
+  <dialog id="trial-confirm-dialog">
+    <div class="dialog-head"><h2>前两条已保存，是否继续？</h2></div>
+    <p>请检查回答、截图及 Excel 回填位置。继续前请关闭打开的结果 Excel，避免文件被占用。</p>
+    <div id="trial-result-files"></div><div id="trial-results"></div>
+    <div class="form-actions end"><button type="button" id="stop-after-trial" class="button ghost">停止并保留结果</button><button type="button" id="continue-after-trial" class="button signal">确认，继续剩余用例</button></div>
   </dialog>
   <dialog id="project-dialog">
     <form method="dialog" id="project-form">

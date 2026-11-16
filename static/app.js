@@ -195,7 +195,7 @@ function renderTargetConfig() {
 function updateWorkflowNote() {
   const collect = $("#workflow-mode").value === "collect_first";
   $("#workflow-note").textContent = collect
-    ? "先把问题、回答和完整截图回填到原始 Excel；评测模型恢复后，再从批次详情统一补评。"
+    ? "每完成一条就按所选形式保存到结果 Excel；前两条保存后确认效果，再继续剩余用例。之后可从批次详情统一补评。"
     : "每条用例完成截图后立即调用评测 Agent；评测成功后才继续下一条。";
 }
 
@@ -240,12 +240,14 @@ function bindPortfolioEvents() {
 
 async function openBatchDetail(id) {
   const batch = await api(`/api/batches/${id}`);
+  let resultFiles = [];
+  try { resultFiles = JSON.parse(batch.result_files_json || "[]"); } catch { /* legacy batch */ }
   $("#batch-detail-title").textContent = `${batch.project_key} · 第 ${batch.id} 次评测`;
   const collected = batch.workflow_mode === "collect_first";
   $("#batch-detail-content").innerHTML = `<div class="batch-mode"><b>${collected ? "先统一采集，再补评" : "逐条采集并立即评测"}</b><span>${collected && batch.evaluation_status !== "completed" ? "回答与证据已保存，尚未调用评测 Agent" : "本批次已完成评测"}</span></div>
     <div class="batch-summary"><span><b>${batch.total}</b>计划用例</span><span><b>${batch.completed}</b>已采集</span><span><b>${batch.passed}</b>通过</span><span><b>${batch.failed}</b>未通过/失败</span></div>
     <div class="batch-runs">${batch.runs.map(run => { const shots = Array.isArray(run.screenshot_paths) ? run.screenshot_paths : (run.screenshot_path ? [run.screenshot_path] : []); return `<article><div><span>${escapeHtml(run.source_sheet_name || "手工用例")} · ${escapeHtml(run.source_case_code || run.code)}</span><b>${escapeHtml(run.title)}</b><small>问题：${escapeHtml(run.query)}</small><small>回复：${escapeHtml(run.actual_answer || "未捕获回复")}</small></div><strong class="${run.status === "collected" ? "pending" : run.passed ? "ok" : "fail"}">${run.status === "collected" ? "已采集 · 待评测" : run.status === "completed" ? `${Number(run.score).toFixed(0)} · ${run.passed ? "通过" : "未通过"}` : "执行失败"}</strong><p>${escapeHtml(run.summary || "暂无评测结论")}</p>${shots.length ? `<div class="shot-links">${shots.map((shot, index) => `<a href="${escapeHtml(shot)}" target="_blank">截图 ${index + 1} ↗</a>`).join("")}</div>` : ""}</article>`; }).join("")}</div>
-    <div class="batch-report-link">${batch.result_workbook_path ? `<a class="button signal" href="${escapeHtml(batch.result_workbook_path)}" target="_blank">下载截图回填 Excel</a>` : ""}${collected && batch.evaluation_status !== "completed" ? `<button class="button ink" id="evaluate-collected" data-batch-id="${batch.id}">统一评测已采集回答</button>` : ""}<a class="button ghost" href="/reports/${batch.project_id}.html?batch=${batch.id}" target="_blank">打开本次完整报告</a></div>`;
+    <div class="batch-report-link">${resultFiles.length ? resultFiles.map(file => `<a class="button signal" href="${escapeHtml(file.url)}" download="${escapeHtml(file.name)}">下载 ${escapeHtml(file.name)}</a>`).join("") : batch.result_workbook_path ? `<a class="button signal" href="${escapeHtml(batch.result_workbook_path)}" target="_blank">下载回填 Excel</a>` : ""}${collected && batch.evaluation_status !== "completed" ? `<button class="button ink" id="evaluate-collected" data-batch-id="${batch.id}">统一评测已采集回答</button>` : ""}<a class="button ghost" href="/reports/${batch.project_id}.html?batch=${batch.id}" target="_blank">打开本次完整报告</a></div>`;
   $("#evaluate-collected")?.addEventListener("click", event => evaluateCollectedBatch(Number(event.currentTarget.dataset.batchId), event.currentTarget));
   $("#batch-dialog").showModal();
 }
@@ -736,7 +738,8 @@ async function confirmBrowserRun(event) {
       if (mappings.length) state.officePlans = await api(`/api/projects/${state.project.id}/offices`, { method: "PATCH", body: JSON.stringify({ mappings }) });
     }
     const workflow_mode = $("#workflow-mode").value;
-    const job = await api("/api/browser-jobs", { method: "POST", body: JSON.stringify({ project_id: state.project.id, case_ids, workflow_mode, office_mode }) });
+    const save_options = { directory: $("#result-directory").value.trim(), column: $("#result-column").value.trim(), format: $("#result-format").value };
+    const job = await api("/api/browser-jobs", { method: "POST", body: JSON.stringify({ project_id: state.project.id, case_ids, workflow_mode, office_mode, save_options }) });
     state.browserJob = job;
     $("#browser-ready-dialog").close();
     $("#browser-progress-dialog").showModal();
@@ -757,7 +760,7 @@ function startJobPolling() {
       const job = await api(`/api/browser-jobs/${state.browserJob.id}`);
       state.browserJob = job;
       renderBrowserJob(job);
-      if (["completed", "failed"].includes(job.status)) {
+      if (["completed", "failed", "stopped"].includes(job.status)) {
         clearInterval(state.jobPoll);
         state.jobPoll = null;
         state.project = await api(`/api/projects/${state.project.id}`);
@@ -779,8 +782,29 @@ function renderBrowserJob(job) {
   $("#job-failed").textContent = job.failed;
   const pause = $("#toggle-job-pause");
   pause.textContent = job.status === "paused" || job.status === "pausing" ? "继续执行" : "当前用例完成后暂停";
-  pause.disabled = ["completed", "failed"].includes(job.status);
-  $("#close-job-progress").disabled = !["completed", "failed"].includes(job.status);
+  pause.disabled = job.awaiting_trial_confirmation || ["completed", "failed", "stopped"].includes(job.status);
+  $("#close-job-progress").disabled = !["completed", "failed", "stopped"].includes(job.status);
+  const files = (job.result_files || []).map(file => `<p><a href="${escapeHtml(file.url)}" download="${escapeHtml(file.name)}">下载 ${escapeHtml(file.name)}</a><br><small>${escapeHtml(file.path)}</small></p>`).join("");
+  $("#job-result-files").innerHTML = files;
+  if (!job.awaiting_trial_confirmation && $("#trial-confirm-dialog").open) $("#trial-confirm-dialog").close();
+  if (job.awaiting_trial_confirmation && !$("#trial-confirm-dialog").open) {
+    $("#trial-result-files").innerHTML = files;
+    $("#trial-results").innerHTML = job.trial_results.map(result => `<article><h3>${escapeHtml(result.code)} · ${result.status === "failed" ? "执行失败" : "已采集并保存"}</h3><pre>${escapeHtml(result.answer)}</pre>${result.screenshots.map(url => `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">查看完整截图</a>`).join(" · ")}</article>`).join("");
+    $("#trial-confirm-dialog").showModal();
+  }
+}
+
+async function decideTrial(continueRun) {
+  const job = state.browserJob;
+  if (!job) return;
+  const buttons = [$("#continue-after-trial"), $("#stop-after-trial")];
+  buttons.forEach(button => { button.disabled = true; });
+  try {
+    state.browserJob = await api(`/api/browser-jobs/${job.id}/${continueRun ? "resume" : "stop"}`, { method: "POST", body: JSON.stringify({ confirm_trial: continueRun }) });
+    $("#trial-confirm-dialog").close();
+    renderBrowserJob(state.browserJob);
+  } catch (error) { toast(error.message, true); }
+  finally { buttons.forEach(button => { button.disabled = false; }); }
 }
 
 async function toggleJobPause() {
@@ -1100,6 +1124,9 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
   $("#delete-selected-cases").addEventListener("click", () => deleteSelectedCases().catch(error => toast(error.message, true)));
   $("#confirm-browser-run").addEventListener("click", confirmBrowserRun);
+  $("#continue-after-trial").addEventListener("click", () => decideTrial(true));
+  $("#stop-after-trial").addEventListener("click", () => decideTrial(false));
+  $("#trial-confirm-dialog").addEventListener("cancel", event => event.preventDefault());
   $$('#office-run-mode input[name="office_run_mode"]').forEach(input => input.addEventListener("change", event => {
     populateOfficePlan(event.currentTarget.value).catch(error => toast(error.message, true));
   }));

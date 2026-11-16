@@ -119,6 +119,7 @@ export function initDb(): void {
   ensureColumn("cases", "input_mode", "TEXT NOT NULL DEFAULT 'message'");
   ensureColumn("cases", "evaluation_criteria", "TEXT NOT NULL DEFAULT ''");
   ensureColumn("cases", "source_fields_json", "TEXT NOT NULL DEFAULT '{}'");
+  ensureColumn("cases", "source_workbook_path", "TEXT NOT NULL DEFAULT ''");
   ensureColumn("cases", "expected_trace_json", "TEXT NOT NULL DEFAULT '{}'");
   ensureColumn("runs", "session_id", "TEXT NOT NULL DEFAULT ''");
   ensureColumn("runs", "screenshot_path", "TEXT NOT NULL DEFAULT ''");
@@ -127,6 +128,7 @@ export function initDb(): void {
   ensureColumn("evaluation_batches", "workflow_mode", "TEXT NOT NULL DEFAULT 'live_eval'");
   ensureColumn("evaluation_batches", "evaluation_status", "TEXT NOT NULL DEFAULT 'completed'");
   ensureColumn("evaluation_batches", "result_workbook_path", "TEXT NOT NULL DEFAULT ''");
+  ensureColumn("evaluation_batches", "result_files_json", "TEXT NOT NULL DEFAULT '[]'");
   database.exec("UPDATE projects SET project_key='PRJ-' || id WHERE trim(project_key)='' OR project_key IS NULL");
   ensureColumn("agent_evaluations", "group_id", "INTEGER REFERENCES agent_evaluation_groups(id) ON DELETE SET NULL");
   migrateEvaluationSets();

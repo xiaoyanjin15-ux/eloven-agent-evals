@@ -357,6 +357,7 @@ export async function importCasesFromExcel(projectId: number, bytes: Buffer, fil
           officeKey, officeName, caseType, conversation.group, conversation.round, inputMode, criteria, timestamp, timestamp);
         db.execute("UPDATE cases SET source_fields_json=?,expected_trace_json=?,approved=? WHERE project_id=? AND code=?",
           JSON.stringify(sourceFields), JSON.stringify(expectedTrace), approved, projectId, code);
+        db.execute("UPDATE cases SET source_workbook_path=? WHERE project_id=? AND code=?", storedPath, projectId, code);
         if (evaluationSetId) {
           const saved = db.row<{ id: number }>("SELECT id FROM cases WHERE project_id=? AND code=?", projectId, code);
           if (saved) attachCaseToEvaluationSet(evaluationSetId, saved.id);
@@ -685,7 +686,7 @@ export function createEvaluationBatch(projectId: number, adapter: TargetAdapter,
     workflowMode === "collect_first" ? "pending" : "running", db.nowIso());
 }
 
-export function finishEvaluationBatch(batchId: number, status: "completed" | "failed" = "completed"): void {
+export function finishEvaluationBatch(batchId: number, status: "completed" | "failed" | "stopped" = "completed"): void {
   const totals = db.row<{ completed: number; passed: number; failed: number }>(`SELECT
     SUM(CASE WHEN status IN ('completed','collected') THEN 1 ELSE 0 END) completed,
     SUM(CASE WHEN status='completed' AND passed=1 THEN 1 ELSE 0 END) passed,

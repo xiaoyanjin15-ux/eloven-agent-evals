@@ -190,3 +190,9 @@
 #run-datasets { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; max-height: 220px; overflow-y: auto; margin: 12px 0; }
 #run-datasets label { display: flex; align-items: center; gap: 10px; padding: 12px; border: 1px solid var(--line, #ddd); border-radius: 8px; }
 #run-datasets input { width: auto; flex: 0 0 auto; }
+.result-save-options { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 12px; margin: 16px 0; }
+.result-save-options p { grid-column: 1 / -1; }
+#trial-confirm-dialog { width: min(900px, 90vw); max-height: 85vh; overflow: auto; padding: 28px; }
+#trial-results pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow-y: auto; }
+#job-result-files, #trial-result-files { overflow-wrap: anywhere; max-height: 180px; overflow-y: auto; }
+@media (max-width: 700px) { .result-save-options { grid-template-columns: 1fr; } }
