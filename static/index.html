@@ -209,6 +209,7 @@
         <div class="case-selection-bar" id="case-selection-bar">
           <label><input id="select-visible-cases" type="checkbox"><span>选择当前列表</span></label>
           <span id="selected-case-count">未选择用例</span>
+          <button class="button signal" type="button" id="approve-selected-cases" disabled>一键审核通过</button>
           <button type="button" id="clear-case-selection">取消选择</button>
           <button class="danger-action" type="button" id="delete-selected-cases" disabled>删除所选</button>
         </div>
@@ -284,6 +285,7 @@
         <label><input type="radio" name="office_run_mode" value="auto" checked><span><b>自动匹配 Office</b><small>按 Excel 中的行业、岗位等字段匹配 Office 名称，自动切换并进入 Agent。</small></span></label>
         <label><input type="radio" name="office_run_mode" value="manual"><span><b>手动进入 Office</b><small>你先手动打开目标 Agent；系统只负责新建会话、执行用例、等待回复和截图。</small></span></label>
       </fieldset>
+      <fieldset><legend>选择测试集（当前项目，可多选）</legend><div id="run-datasets"></div><button type="button" id="select-all-run-datasets">选择全部测试集</button><p>仅执行已审核用例；多个测试集中的相同用例只执行一次。</p></fieldset>
       <div class="office-plan-tools"><span id="run-scope-summary">正在读取办公室分组…</span><button type="button" id="select-all-run-cases">全部选择</button><button type="button" id="clear-run-cases">全部清空</button></div>
       <div class="office-plan-grid office-plan-columns" aria-hidden="true"><b>执行目标</b><b>自动识别分组</b><b>对应测试用例</b></div>
       <div id="office-run-plan" class="office-run-plan"></div>

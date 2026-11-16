@@ -309,6 +309,7 @@ function updateCaseSelectionBar(visibleCases = state.cases.filter(item => state.
   const selectedVisible = visibleIds.filter(id => state.selectedCases.has(id)).length;
   $("#selected-case-count").textContent = selected ? `已选择 ${selected} 条用例` : "未选择用例";
   $("#delete-selected-cases").disabled = !selected;
+  $("#approve-selected-cases").disabled = !selected;
   $("#clear-case-selection").disabled = !selected;
   const selectAll = $("#select-visible-cases");
   selectAll.checked = Boolean(visibleIds.length && selectedVisible === visibleIds.length);
@@ -588,10 +589,11 @@ async function runApproved(button) {
       const preferredMode = state.officeRunMode === "manual" ? "manual" : "auto";
       const preferredRadio = $(`#office-run-mode input[value="${preferredMode}"]`);
       if (preferredRadio) preferredRadio.checked = true;
+      await loadRunDatasets();
       await populateOfficePlan(preferredMode, true);
       button.textContent = "正在打开 Office…";
       await api("/api/browser/session", { method: "POST", body: JSON.stringify({ start_url }) });
-      $("#confirm-browser-run").disabled = false;
+      updateOfficeSelection();
       $("#confirm-browser-run").textContent = state.officeRunMode === "manual" ? "开始执行" : "保存映射并开始执行";
       $("#browser-ready-dialog").showModal();
       toast("请确认实际 Office 映射和本次用例范围");
@@ -602,9 +604,24 @@ async function runApproved(button) {
   finally { button.disabled = false; button.innerHTML = original; }
 }
 
+async function loadRunDatasets() {
+  const datasets = await api(`/api/projects/${state.project.id}/evaluation-sets`);
+  state.runDatasets = await Promise.all(datasets.map(async dataset => ({ ...dataset,
+    cases: await api(`/api/projects/${state.project.id}/cases?evaluation_set_id=${dataset.id}`),
+  })));
+  $("#run-datasets").innerHTML = state.runDatasets.map(dataset => `<label><input type="checkbox" value="${dataset.id}" ${dataset.id === state.dataset?.id ? "checked" : ""}><span>${escapeHtml(dataset.name)}（${dataset.cases.filter(item => item.approved).length} 已审核 / ${dataset.cases.length} 条）</span></label>`).join("") || "当前项目尚未上传测试集";
+}
+
 async function populateOfficePlan(mode = "auto", fallbackToManual = false) {
-  const mappedPlans = await api(`/api/projects/${state.project.id}/offices`);
-  const approved = state.cases.filter(item => item.approved);
+  const revision = state.runPlanRevision = (state.runPlanRevision || 0) + 1;
+  $("#confirm-browser-run").disabled = true;
+  $("#office-run-plan").innerHTML = "正在读取所选测试集…";
+  const selectedDatasets = new Set($$("#run-datasets input:checked").map(input => Number(input.value)));
+  const chosen = (state.runDatasets || []).filter(dataset => selectedDatasets.has(dataset.id));
+  const approved = [...new Map(chosen.flatMap(dataset => dataset.cases).filter(item => item.approved).map(item => [item.id, item])).values()];
+  const allowedIds = new Set(approved.map(item => item.id));
+  const mappedPlans = (await api(`/api/projects/${state.project.id}/offices`)).map(plan => ({ ...plan, cases: plan.cases.filter(item => allowedIds.has(item.id)) })).filter(plan => plan.cases.length);
+  if (revision !== state.runPlanRevision) return;
   const assignedIds = new Set(mappedPlans.flatMap(plan => plan.cases.map(item => item.id)));
   const unassigned = approved.filter(item => !assignedIds.has(item.id));
   if (mode === "auto" && fallbackToManual && !mappedPlans.length) {
@@ -614,15 +631,14 @@ async function populateOfficePlan(mode = "auto", fallbackToManual = false) {
   }
   state.officeRunMode = mode;
   if (mode === "manual") {
-    const bySheet = new Map();
-    approved.forEach(item => {
-      const sheetName = item.source_sheet_name || "未命名分组";
-      if (!bySheet.has(sheetName)) bySheet.set(sheetName, []);
-      bySheet.get(sheetName).push(item);
-    });
-    state.officePlans = [...bySheet.entries()].map(([sheetName, cases]) => ({
-      office_key: `__manual__:${sheetName}`, generated_name: sheetName, actual_office_name: "", actual_office_url: "", cases,
-    }));
+    const seen = new Set();
+    state.officePlans = chosen.map(dataset => ({
+      office_key: `__manual__:${dataset.id}`, generated_name: dataset.name, actual_office_name: "", actual_office_url: "",
+      cases: dataset.cases.filter(item => {
+        if (!item.approved || seen.has(item.id)) return false;
+        seen.add(item.id); return true;
+      }),
+    })).filter(plan => plan.cases.length);
   } else state.officePlans = [...mappedPlans];
   $("#confirm-browser-run").textContent = mode === "manual" ? "开始执行" : "保存映射并开始执行";
   $("#office-mode-note").textContent = mode === "manual"
@@ -667,7 +683,8 @@ function updateOfficeSelection() {
   });
   const count = selectedRunCaseIds().length;
   const offices = $$("#office-run-plan .office-plan-row").filter(row => $$(".office-case-check:checked", row).length).length;
-  $("#run-scope-summary").textContent = count ? `已选择 ${offices} 个 Office，共 ${count} 条用例` : "请至少选择一条用例";
+  $("#run-scope-summary").textContent = count ? `已选择 ${offices} 个执行分组，共 ${count} 条用例` : "请选择测试集及其中已审核的用例";
+  $("#confirm-browser-run").disabled = !count;
 }
 
 function officeMappingPayload() {
@@ -728,7 +745,7 @@ async function confirmBrowserRun(event) {
   } catch (error) {
     toast(error.message, true);
     button.disabled = false;
-    button.textContent = office_mode === "manual" ? "开始执行" : "保存映射并开始执行";
+    button.textContent = state.officeRunMode === "manual" ? "开始执行" : "保存映射并开始执行";
   }
 }
 
@@ -1061,6 +1078,26 @@ document.addEventListener("DOMContentLoaded", async () => {
     renderCases();
   });
   $("#clear-case-selection").addEventListener("click", () => { state.selectedCases.clear(); renderCases(); });
+  $("#approve-selected-cases").addEventListener("click", async event => {
+    const button = event.currentTarget;
+    const case_ids = [...state.selectedCases];
+    if (!case_ids.length) return;
+    button.disabled = true;
+    try {
+      await api(`/api/projects/${state.project.id}/cases`, { method: "PATCH", body: JSON.stringify({ case_ids }) });
+      state.cases = await api(`/api/projects/${state.project.id}/cases?evaluation_set_id=${state.dataset.id}`);
+      delete state.portfolioCases[state.project.id];
+      state.datasets = await api(`/api/projects/${state.project.id}/evaluation-sets`);
+      renderDatasets(); renderCases(); renderSummary();
+      toast(`已审核通过 ${case_ids.length} 条用例`);
+    } catch (error) { toast(error.message, true); }
+    finally { updateCaseSelectionBar(); }
+  });
+  $("#run-datasets").addEventListener("change", () => populateOfficePlan(state.officeRunMode).catch(error => toast(error.message, true)));
+  $("#select-all-run-datasets").addEventListener("click", () => {
+    $$("#run-datasets input").forEach(input => { input.checked = true; });
+    populateOfficePlan(state.officeRunMode).catch(error => toast(error.message, true));
+  });
   $("#delete-selected-cases").addEventListener("click", () => deleteSelectedCases().catch(error => toast(error.message, true)));
   $("#confirm-browser-run").addEventListener("click", confirmBrowserRun);
   $$('#office-run-mode input[name="office_run_mode"]').forEach(input => input.addEventListener("change", event => {

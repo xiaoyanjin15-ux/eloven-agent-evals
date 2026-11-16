@@ -186,3 +186,7 @@
 .judge-model-group>header p{margin:0;color:var(--muted);font-size:11px;line-height:1.5}
 .judge-group-empty{margin:0;padding:15px 18px;border:1px dashed var(--line);border-radius:8px;color:var(--muted);font-size:11px}
 @media(max-width:720px){.judge-model-group>header{display:block}.judge-model-group>header p{margin-top:6px}.judge-run-picker{min-width:0}}
+
+#run-datasets { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; max-height: 220px; overflow-y: auto; margin: 12px 0; }
+#run-datasets label { display: flex; align-items: center; gap: 10px; padding: 12px; border: 1px solid var(--line, #ddd); border-radius: 8px; }
+#run-datasets input { width: auto; flex: 0 0 auto; }

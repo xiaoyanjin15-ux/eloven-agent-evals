@@ -227,6 +227,16 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
     }
   }
   match = path.match(/^\/api\/projects\/(\d+)\/cases$/);
+  if (match && method === "PATCH") {
+    const projectId = Number(match[1]); getProject(projectId);
+    const body = await readJson(request);
+    const ids: number[] = Array.isArray(body.case_ids) ? [...new Set<number>(body.case_ids.map(Number))] : [];
+    if (!ids.length || ids.some(id => !Number.isSafeInteger(id) || id <= 0)) throw new HttpError(400, "请选择要审核的用例");
+    const allowed = new Set(listCases(projectId).map(item => item.id));
+    if (ids.some(id => !allowed.has(id))) throw new HttpError(400, "所选用例不属于当前项目");
+    db.execute(`UPDATE cases SET approved=1,updated_at=? WHERE project_id=? AND id IN (${ids.map(() => "?").join(",")})`, db.nowIso(), projectId, ...ids);
+    return sendJson(response, 200, { approved_count: ids.length });
+  }
   if (match && method === "GET") {
     const projectId = Number(match[1]); getProject(projectId); const setId = Number(url.searchParams.get("evaluation_set_id") || 0);
     if (setId) getEvaluationSet(projectId, setId);

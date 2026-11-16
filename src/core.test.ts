@@ -94,6 +94,19 @@ test("TypeScript pi server completes the main API flow", async () => {
     assert.equal(imported.cases[1].evaluation_criteria, "不得声称拥有未授权数据");
     const namedSetCases = await fetch(`${base}/api/projects/${importedProject.id}/cases?evaluation_set_id=${evaluationSet.id}`).then((response) => response.json()) as unknown[];
     assert.equal(namedSetCases.length, 2);
+    const reviewIds = imported.cases.map(item => item.id);
+    for (const id of reviewIds) await fetch(`${base}/api/cases/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ approved: false }) });
+    const approve = (project: number, ids: number[]) => fetch(`${base}/api/projects/${project}/cases`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ case_ids: ids }),
+    });
+    assert.equal((await approve(importedProject.id, [])).status, 400);
+    assert.equal((await approve(projectId, reviewIds)).status, 400);
+    assert.equal((await approve(importedProject.id, [...reviewIds, 99999999])).status, 400);
+    const beforeReview = await fetch(`${base}/api/projects/${importedProject.id}/cases`).then(response => response.json()) as Array<{ approved: number }>;
+    assert.ok(beforeReview.every(item => !item.approved), "invalid batches must not partially approve cases");
+    assert.equal((await approve(importedProject.id, [...reviewIds, reviewIds[0]])).status, 200);
+    const afterReview = await fetch(`${base}/api/projects/${importedProject.id}/cases`).then(response => response.json()) as Array<{ approved: number }>;
+    assert.ok(afterReview.every(item => item.approved));
     assert.equal((await fetch(`${base}/api/projects/${importedProject.id}/evaluation-sets`).then(response => response.json()) as unknown[]).length, 2);
     const officePlans = await fetch(`${base}/api/projects/${importedProject.id}/offices`).then((response) => response.json()) as
       Array<{ office_key: string; generated_name: string; cases: Array<{ id: number }> }>;
