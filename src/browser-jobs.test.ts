@@ -6,6 +6,7 @@ import ts from "typescript";
 
 function fixture(count: number, failSaveAt = 0) {
   const calls: number[] = [], saves: number[] = [];
+  const conversationOptions: unknown[] = [];
   const cases = Array.from({ length: count }, (_, index) => ({ id: index + 1, approved: 1, code: `Q${index + 1}`, source_row_number: index + 2, conversation_round: 1 }));
   const source = readFileSync(new URL("../../src/browser-jobs.ts", import.meta.url), "utf8");
   const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
@@ -22,15 +23,15 @@ function fixture(count: number, failSaveAt = 0) {
       async write(id: number) { if (id === failSaveAt) throw new Error("save failed"); saves.push(id); }
     } },
     "./services.js": { createEvaluationBatch: () => 1, finishEvaluationBatch() {}, listCases: () => cases, listOfficePlans: () => [],
-      runCases: async (_project: number, ids: number[]) => { calls.push(ids[0]); return [{ status: "collected", messages: [{ role: "assistant", content: `answer-${ids[0]}` }] }]; } },
+      runCases: async (_project: number, ids: number[], ...rest: unknown[]) => { calls.push(ids[0]); conversationOptions.push(rest[4]); return [{ status: "collected", messages: [{ role: "assistant", content: `answer-${ids[0]}` }] }]; } },
   };
   runInNewContext(compiled, { exports, require: (name: string) => { if (!(name in dependencies)) throw new Error(name); return dependencies[name]; } });
-  return { api: exports, calls, saves };
+  return { api: exports, calls, saves, conversationOptions };
 }
 async function settle() { for (let index = 0; index < 30; index++) await Promise.resolve(); }
 
 test("trial pauses only after two saved rows and requires explicit confirmation before the third", async () => {
-  const { api, calls, saves } = fixture(4);
+  const { api, calls, saves, conversationOptions } = fixture(4);
   const job = api.startBrowserJob(1, [], "collect_first", "manual");
   await settle();
   assert.deepEqual(calls, [1, 2]); assert.deepEqual(saves, [1, 2]);
@@ -39,6 +40,7 @@ test("trial pauses only after two saved rows and requires explicit confirmation 
   await settle(); assert.deepEqual(calls, [1, 2]);
   api.resumeBrowserJob(job.id, true); await settle();
   assert.deepEqual(calls, [1, 2, 3, 4]); assert.deepEqual(saves, calls);
+  assert.equal(JSON.stringify(conversationOptions), JSON.stringify(Array.from({ length: 4 }, () => ({ newConversation: true }))));
   assert.equal(api.getBrowserJob(job.id).status, "completed");
 });
 test("small selections finish directly, stopping retains trial rows, save failure prevents further questions", async () => {

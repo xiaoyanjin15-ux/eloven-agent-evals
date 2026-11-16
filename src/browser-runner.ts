@@ -176,15 +176,8 @@ async function executeDialogue(evalCase: EvalCase, projectKey: string, options: 
   if (!scope) throw new Error("未找到 Agent 对话区域。请在弹出的测试浏览器中登录 Office、打开目标 Agent 后重新执行");
 
   if (options.newConversation !== false) {
-    const newChat = await findNewChatButton(scope);
-    if (newChat) {
-      await newChat.click();
-      await page.waitForTimeout(700);
-      trace.push({ action: "click", target: "新对话", status: "completed" });
-      scope = await findConversationScope(page) || scope;
-    } else {
-      trace.push({ action: "click", target: "新对话", status: "skipped", reason: "页面没有可见的新对话按钮" });
-    }
+    scope = await startNewConversation(page, scope);
+    trace.push({ action: "click", target: "新建空白会话", status: "completed" });
   } else {
     trace.push({ action: "continue_conversation", target: evalCase.conversation_group, round: evalCase.conversation_round, status: "completed" });
   }
@@ -209,7 +202,7 @@ async function executeDialogue(evalCase: EvalCase, projectKey: string, options: 
   if (normaliseSpace(written) !== normaliseSpace(evalCase.query)) throw new Error("测试问题未能正确写入对话框");
   trace.push({ action: "fill", target: "消息输入框", value: evalCase.query, status: "completed" });
 
-  const before = await articleTexts(scope);
+  const before = [...await articleTexts(scope), ...await assistantTexts(scope)];
   const send = await findSendButton(scope);
   if (send) await send.click();
   else await input.press("Enter");
@@ -443,11 +436,28 @@ function officeNamePattern(value: string): RegExp {
   return new RegExp(`^\\s*${body}\\s*$`, "i");
 }
 
+export async function startNewConversation(page: Page, scope: BrowserScope): Promise<BrowserScope> {
+  const newChat = await findNewChatButton(scope) || (scope !== page ? await findNewChatButton(page) : undefined);
+  if (!newChat) throw new Error("未找到新建空白会话按钮；为避免继承历史消息，本题未发送");
+  await newChat.click();
+  const deadline = Date.now() + 15_000;
+  while (Date.now() < deadline) {
+    const next = await findConversationScope(page);
+    if (next && !(await articleTexts(next)).length && !(await assistantTexts(next)).length
+      && !(await next.locator('[data-slot="conversation.chat.user.text"]').count())
+      && !(await readInputValue((await findMessageInput(next))!)).trim()) return next;
+    await page.waitForTimeout(250);
+  }
+  throw new Error("新会话未清空历史消息或未出现输入框，本题未发送");
+}
+
 async function findNewChatButton(scope: BrowserScope): Promise<Locator | undefined> {
+  const name = /^(?:新建会话|新对话|新会话|开始新对话|新建对话|New chat)$/i;
   const candidates = [
-    scope.getByRole("button", { name: /新对话|新会话|开始新对话/ }),
-    scope.locator('[aria-label*="新对话"], [aria-label*="新会话"], [title*="新对话"], [title*="新会话"]'),
-    scope.getByText(/^(新对话|新会话|开始新对话)$/),
+    scope.getByRole("button", { name }).filter({ hasText: /新会话|新对话|New chat/i }),
+    scope.getByRole("button", { name }),
+    scope.locator('[aria-label="新建会话"], [aria-label="新对话"], [aria-label="新会话"], [title="新对话"], [title="新会话"]'),
+    scope.getByText(name),
   ];
   return firstVisible(candidates);
 }
@@ -496,7 +506,7 @@ async function readInputValue(input: Locator): Promise<string> {
   });
 }
 
-async function waitForAnswer(scope: BrowserScope, before: string[], query: string, timeoutMs: number): Promise<string> {
+export async function waitForAnswer(scope: BrowserScope, before: string[], query: string, timeoutMs: number): Promise<string> {
   const started = Date.now();
   let stable = "";
   let stableCount = 0;
@@ -542,8 +552,10 @@ async function articleTexts(scope: BrowserScope): Promise<string[]> {
   return texts.map(normaliseSpace).filter(Boolean);
 }
 
-async function assistantTexts(scope: BrowserScope): Promise<string[]> {
-  const selector = '[data-message-author-role="assistant"], [data-role="assistant"], .assistant-message, .message.assistant, [class*="assistantMessage"]';
+const ASSISTANT_SELECTOR = '[data-slot="conversation.chat.assistant.text"], [data-message-author-role="assistant"], [data-role="assistant"], .assistant-message, .message.assistant, [class*="assistantMessage"]';
+
+export async function assistantTexts(scope: BrowserScope): Promise<string[]> {
+  const selector = ASSISTANT_SELECTOR;
   const texts = await scope.locator(selector).allInnerTexts().catch(() => []);
   return texts.map(normaliseSpace).filter(Boolean);
 }
@@ -669,7 +681,7 @@ async function captureDialogueEvidence(page: Page, scope: BrowserScope, query: s
 }
 
 async function latestAssistantLocator(scope: BrowserScope): Promise<Locator | undefined> {
-  const selector = '[data-message-author-role="assistant"], [data-role="assistant"], .assistant-message, .message.assistant, [class*="assistantMessage"]';
+  const selector = ASSISTANT_SELECTOR;
   const explicit = scope.locator(selector);
   const explicitCount = await explicit.count().catch(() => 0);
   if (explicitCount) return explicit.nth(explicitCount - 1);

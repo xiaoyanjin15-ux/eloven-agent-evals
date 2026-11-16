@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 
 import { activateBrowserOffice } from "./browser-runner.js";
-import { planConversationTurn } from "./conversation-plan.js";
 import * as db from "./db.js";
 import { createEvaluationBatch, finishEvaluationBatch, listCases, listOfficePlans, runCases } from "./services.js";
 import { IncrementalWorkbook, normaliseSaveOptions, type SaveOptions, type SavedWorkbook } from "./incremental-workbook.js";
@@ -135,7 +134,6 @@ async function executeJob(job: BrowserJob, cases: Array<{ id: number; code: stri
     job.result_files = writer.files;
     const officePlans = new Map(listOfficePlans(job.project_id).map((item) => [item.office_key, item]));
     let activeOfficeKey = "";
-    let activeConversationGroup = "";
     for (const item of cases) {
       if (job.pause_requested) await waitForResume(job);
       if (job.stop_requested) break;
@@ -148,7 +146,6 @@ async function executeJob(job: BrowserJob, cases: Array<{ id: number; code: stri
         touch(job);
         await activateBrowserOffice(item.start_url || project.target_base_url, plan.actual_office_name, plan.actual_office_url);
         activeOfficeKey = item.office_key;
-        activeConversationGroup = "";
       }
       if (job.office_mode === "manual") {
         job.current_office_name = "当前已打开的 Office / Agent";
@@ -158,10 +155,8 @@ async function executeJob(job: BrowserJob, cases: Array<{ id: number; code: stri
       job.current_title = item.title;
       job.stage = job.workflow_mode === "collect_first" ? "正在发送问题、等待回复并保存完整截图" : "正在发送问题、等待回复、截图并评分";
       touch(job);
-      const conversationPlan = planConversationTurn(item, activeConversationGroup);
       const results = await runCases(job.project_id, [item.id], "browser", undefined, job.batch_id, job.workflow_mode,
-        { newConversation: conversationPlan.newConversation });
-      activeConversationGroup = conversationPlan.nextGroup;
+        { newConversation: true });
       const result = results[0];
       if (!result) throw new Error("未返回执行结果");
       job.stage = `正在保存 ${item.code} 到 Excel`;
