@@ -69,6 +69,15 @@ try {
   await page.locator("#toggle-job-pause").click();
   await page.waitForFunction(() => document.querySelector("#job-progress-count").textContent === "4 / 4");
   assert.equal(continued, true);
+  await page.route("**/api/projects/*/batches", route => route.fulfill({ json: [{ id: 52, status: "failed" }] }));
+  await page.route("**/api/batches/52", route => route.fulfill({ json: { id: 52, project_key: "1116", project_id: projects[0].id,
+    adapter: "browser", status: "failed", workflow_mode: "collect_first", total: 100, completed: 47, passed: 0, failed: 0,
+    runs: [], result_files_json: JSON.stringify(job.result_files) } }));
+  await page.locator("#close-job-progress").click();
+  await page.locator('[data-history-batch="52"]').click();
+  await page.locator("#batch-dialog").waitFor({ state: "visible" });
+  assert.match(await page.locator("#batch-detail-title").innerText(), /第 52 次评测/);
+  assert.equal(await page.locator("#batch-detail-content").getByRole("button", { name: "从中断处继续（原表）", exact: true }).count(), 1);
   assert.deepEqual(errors, []);
   console.log("PASS: save options, automatic trial modal, explicit continuation and result download UI");
 } finally { await browser?.close(); server.kill(); }

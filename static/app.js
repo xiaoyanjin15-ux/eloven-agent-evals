@@ -1025,6 +1025,9 @@ async function saveTargetConfig() {
 
 async function loadRuns() {
   if (!state.project) return;
+  const batches = await api(`/api/projects/${state.project.id}/batches`);
+  $("#run-batch-list").innerHTML = batches.length ? batches.map(batch => `<button type="button" class="button ghost" data-history-batch="${Number(batch.id)}">第 ${Number(batch.id)} 次评测 · ${escapeHtml(({running:"执行中或已中断",completed:"已完成",failed:"失败",stopped:"已停止"})[batch.status] || batch.status)} · 查看详情</button>`).join(" ") : "<p>暂无历史评测批次</p>";
+  $$("[data-history-batch]").forEach(button => button.addEventListener("click", () => openBatchDetail(Number(button.dataset.historyBatch)).catch(error => toast(error.message, true))));
   state.runs = await api(`/api/projects/${state.project.id}/runs`);
   $("#run-list").innerHTML = state.runs.length ? state.runs.map(run => `
     <div class="run-item" data-run-id="${run.id}"><b>${escapeHtml(run.code)} · ${escapeHtml(run.title)}</b>
