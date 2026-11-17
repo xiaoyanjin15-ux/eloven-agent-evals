@@ -249,6 +249,12 @@ async function openBatchDetail(id) {
     <div class="batch-runs">${batch.runs.map(run => { const shots = Array.isArray(run.screenshot_paths) ? run.screenshot_paths : (run.screenshot_path ? [run.screenshot_path] : []); return `<article><div><span>${escapeHtml(run.source_sheet_name || "手工用例")} · ${escapeHtml(run.source_case_code || run.code)}</span><b>${escapeHtml(run.title)}</b><small>问题：${escapeHtml(run.query)}</small><small>回复：${escapeHtml(run.actual_answer || "未捕获回复")}</small></div><strong class="${run.status === "collected" ? "pending" : run.passed ? "ok" : "fail"}">${run.status === "collected" ? "已采集 · 待评测" : run.status === "completed" ? `${Number(run.score).toFixed(0)} · ${run.passed ? "通过" : "未通过"}` : "执行失败"}</strong><p>${escapeHtml(run.summary || "暂无评测结论")}</p>${shots.length ? `<div class="shot-links">${shots.map((shot, index) => `<a href="${escapeHtml(shot)}" target="_blank">截图 ${index + 1} ↗</a>`).join("")}</div>` : ""}</article>`; }).join("")}</div>
     <div class="batch-report-link">${resultFiles.length ? resultFiles.map(file => `<a class="button signal" href="${escapeHtml(file.url)}" download="${escapeHtml(file.name)}">下载 ${escapeHtml(file.name)}</a>`).join("") : batch.result_workbook_path ? `<a class="button signal" href="${escapeHtml(batch.result_workbook_path)}" target="_blank">下载回填 Excel</a>` : ""}${collected && batch.evaluation_status !== "completed" ? `<button class="button ink" id="evaluate-collected" data-batch-id="${batch.id}">统一评测已采集回答</button>` : ""}<a class="button ghost" href="/reports/${batch.project_id}.html?batch=${batch.id}" target="_blank">打开本次完整报告</a></div>`;
   $("#evaluate-collected")?.addEventListener("click", event => evaluateCollectedBatch(Number(event.currentTarget.dataset.batchId), event.currentTarget));
+  if (batch.adapter === "browser" && batch.status !== "completed" && resultFiles.length) {
+    const button = document.createElement("button"); button.className = "button ink";
+    button.textContent = "从中断处继续（原表）";
+    button.addEventListener("click", () => resumeBatch(batch.id).catch(error => toast(error.message, true)));
+    $("#batch-detail-content").prepend(button);
+  }
   $("#batch-dialog").showModal();
 }
 
@@ -781,8 +787,8 @@ function renderBrowserJob(job) {
   $("#job-passed").textContent = job.workflow_mode === "collect_first" ? "—" : job.passed;
   $("#job-failed").textContent = job.failed;
   const pause = $("#toggle-job-pause");
-  pause.textContent = job.status === "paused" || job.status === "pausing" ? "继续执行" : "当前用例完成后暂停";
-  pause.disabled = job.awaiting_trial_confirmation || ["completed", "failed", "stopped"].includes(job.status);
+  pause.textContent = ["failed", "stopped"].includes(job.status) ? "从中断处继续（原表）" : job.status === "paused" || job.status === "pausing" ? "继续执行" : "当前用例完成后暂停";
+  pause.disabled = job.awaiting_trial_confirmation || job.status === "completed";
   $("#close-job-progress").disabled = !["completed", "failed", "stopped"].includes(job.status);
   const files = (job.result_files || []).map(file => `<p><a href="${escapeHtml(file.url)}" download="${escapeHtml(file.name)}">下载 ${escapeHtml(file.name)}</a><br><small>${escapeHtml(file.path)}</small></p>`).join("");
   $("#job-result-files").innerHTML = files;
@@ -810,9 +816,18 @@ async function decideTrial(continueRun) {
 async function toggleJobPause() {
   const job = state.browserJob;
   if (!job) return;
+  if (["failed", "stopped"].includes(job.status)) return resumeBatch(job.batch_id);
   const action = job.status === "paused" || job.status === "pausing" ? "resume" : "pause";
   state.browserJob = await api(`/api/browser-jobs/${job.id}/${action}`, { method: "POST" });
   renderBrowserJob(state.browserJob);
+}
+
+async function resumeBatch(batchId) {
+  if (!confirm("请先关闭原结果文件的 Excel/WPS，并在测试浏览器打开目标 Agent。继续将保留已保存行，补存中断回答，然后继续剩余用例，仍写入原表。是否继续？")) return;
+  state.browserJob = await api(`/api/batches/${batchId}/resume-browser`, { method: "POST" });
+  $("#batch-dialog").close();
+  if (!$("#browser-progress-dialog").open) $("#browser-progress-dialog").showModal();
+  renderBrowserJob(state.browserJob); startJobPolling();
 }
 
 async function closeJobProgress() {

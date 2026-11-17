@@ -24,7 +24,7 @@ try {
   const errors = []; page.on("pageerror", error => errors.push(error.message));
   await page.route("**/api/browser/session", route => route.fulfill({ json: { opened_url: "https://example.test" } }));
   let submitted;
-  let job = { id: "trial", total: 4, completed: 2, passed: 0, failed: 0, workflow_mode: "collect_first", status: "paused", awaiting_trial_confirmation: true,
+  let job = { id: "trial", batch_id: 1, total: 4, completed: 2, passed: 0, failed: 0, workflow_mode: "collect_first", status: "paused", awaiting_trial_confirmation: true,
     stage: "前两条已写入并保存 Excel", trial_results: [{ code: "Q1", status: "collected", answer: "第一条回答", screenshots: [] }, { code: "Q2", status: "collected", answer: "第二条回答", screenshots: [] }],
     result_files: [{ path: join(temp, "结果.xlsx"), name: "结果.xlsx", url: "/api/batches/1/files/0" }] };
   await page.route("**/api/browser-jobs**", async route => {
@@ -32,8 +32,14 @@ try {
     if (request.url().endsWith("/api/browser-jobs")) submitted = request.postDataJSON();
     if (request.url().endsWith("/resume")) {
       assert.equal(request.postDataJSON().confirm_trial, true);
-      job = { ...job, status: "completed", completed: 4, awaiting_trial_confirmation: false };
+      job = { ...job, status: "failed", completed: 2, awaiting_trial_confirmation: false, error: "Excel file locked" };
     }
+    await route.fulfill({ json: job });
+  });
+  let continued = false;
+  await page.route("**/api/batches/1/resume-browser", async route => {
+    continued = true;
+    job = { ...job, status: "completed", completed: 4, error: undefined };
     await route.fulfill({ json: job });
   });
   await page.goto(base);
@@ -57,7 +63,12 @@ try {
   await page.screenshot({ path: join(out, "trial-confirmation.png") });
   await page.locator("#continue-after-trial").click();
   assert.equal(await page.locator("#trial-confirm-dialog").evaluate(dialog => dialog.open), false);
-  assert.equal(await page.locator("#job-progress-count").innerText(), "4 / 4");
+  assert.equal(await page.locator("#job-progress-count").innerText(), "2 / 4");
+  assert.match(await page.locator("#toggle-job-pause").innerText(), /从中断处继续/);
+  page.once("dialog", dialog => dialog.accept());
+  await page.locator("#toggle-job-pause").click();
+  await page.waitForFunction(() => document.querySelector("#job-progress-count").textContent === "4 / 4");
+  assert.equal(continued, true);
   assert.deepEqual(errors, []);
   console.log("PASS: save options, automatic trial modal, explicit continuation and result download UI");
 } finally { await browser?.close(); server.kill(); }

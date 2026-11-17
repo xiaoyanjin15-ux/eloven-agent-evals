@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
+import { readCheckpoint, saveCheckpoint } from "./browser-checkpoints.js";
+import { recoverLegacyBatch } from "./legacy-browser-resume.js";
 
 import { activateBrowserOffice } from "./browser-runner.js";
 import * as db from "./db.js";
-import { createEvaluationBatch, finishEvaluationBatch, listCases, listOfficePlans, runCases } from "./services.js";
-import { IncrementalWorkbook, normaliseSaveOptions, type SaveOptions, type SavedWorkbook } from "./incremental-workbook.js";
+import { createEvaluationBatch, finishEvaluationBatch, getRun, listCases, listOfficePlans, runCases } from "./services.js";
+import { IncrementalWorkbook, normaliseSaveOptions, type SaveOptions, type SavedWorkbook, type WorkbookCheckpoint } from "./incremental-workbook.js";
 import type { Project, WorkflowMode } from "./domain.js";
 
 export type BrowserJobStatus = "queued" | "running" | "pausing" | "paused" | "completed" | "failed" | "stopped";
@@ -41,6 +43,11 @@ export interface BrowserJob {
 
 const jobs = new Map<string, BrowserJob>();
 const resumeWaiters = new Map<string, () => void>();
+type JobCase = { id: number; code: string; title: string; office_key: string; office_name: string; start_url: string;
+  case_type: "single_turn" | "multi_turn"; conversation_group: string; conversation_round: number };
+interface Checkpoint { job: BrowserJob; cases: JobCase[]; workbook?: WorkbookCheckpoint; pending?: Record<string, unknown> }
+const checkpoints = new Map<string, Checkpoint>();
+const batchResumes = new Map<number, Promise<BrowserJob>>();
 
 export function startBrowserJob(projectId: number, caseIds: number[] = [], workflowMode: WorkflowMode = "live_eval",
   officeMode: OfficeRunMode = "auto", saveOptions: Partial<SaveOptions> = {}): BrowserJob {
@@ -71,6 +78,7 @@ export function startBrowserJob(projectId: number, caseIds: number[] = [], workf
     save_options, result_files: [], awaiting_trial_confirmation: false, stop_requested: false, trial_results: [],
   };
   jobs.set(job.id, job);
+  checkpoints.set(job.id, { job, cases: selected });
   void executeJob(job, selected.map((item) => ({ id: item.id, code: item.code, title: item.title,
     office_key: item.office_key, office_name: item.office_name, start_url: item.start_url, case_type: item.case_type,
     conversation_group: item.conversation_group, conversation_round: item.conversation_round })));
@@ -78,8 +86,7 @@ export function startBrowserJob(projectId: number, caseIds: number[] = [], workf
 }
 
 export function getBrowserJob(id: string): BrowserJob {
-  const job = jobs.get(id);
-  if (!job) throw new Error("执行任务不存在或服务已重启");
+  const job = requireActive(id);
   return snapshot(job);
 }
 
@@ -96,11 +103,21 @@ export function pauseBrowserJob(id: string): BrowserJob {
 export function resumeBrowserJob(id: string, confirmTrial = false): BrowserJob {
   const job = requireActive(id);
   if (job.awaiting_trial_confirmation && !confirmTrial) throw new Error("请先确认前两条采集和 Excel 保存结果，再继续剩余用例");
-  if (["completed", "failed", "stopped"].includes(job.status)) return snapshot(job);
+  if (job.status === "completed") return snapshot(job);
+  if ([...jobs.values()].some(other => other.id !== id && !["completed", "failed", "stopped"].includes(other.status))) throw new Error("请先停止其他浏览器任务");
+  const restart = ["failed", "stopped"].includes(job.status);
   job.awaiting_trial_confirmation = false;
   job.pause_requested = false;
+  job.stop_requested = false;
+  delete job.error;
+  if (restart) {
+    const checkpoint = checkpoints.get(id)!;
+    void executeJob(job, checkpoint.cases);
+    return snapshot(job);
+  }
   if (job.status === "paused" || job.status === "pausing") {
     job.status = "running";
+    db.execute("UPDATE evaluation_batches SET status='running',finished_at=NULL WHERE id=?", job.batch_id);
     job.stage = "正在继续执行";
     touch(job);
     resumeWaiters.get(id)?.();
@@ -124,17 +141,22 @@ async function executeJob(job: BrowserJob, cases: Array<{ id: number; code: stri
   case_type: "single_turn" | "multi_turn"; conversation_group: string; conversation_round: number }>): Promise<void> {
   try {
     job.status = "running";
+    db.execute("UPDATE evaluation_batches SET status='running',finished_at=NULL WHERE id=?", job.batch_id);
     job.stage = "正在连接目标 Agent";
     touch(job);
     const project = db.row<Project>("SELECT * FROM projects WHERE id=?", job.project_id);
     if (!project) throw new Error("评测项目不存在");
     job.stage = "正在检查 Excel 来源、回填列和保存目录";
     const writer = new IncrementalWorkbook(job.batch_id, job.id, job.save_options);
-    await writer.prepare(job.project_id, cases.map(item => item.id));
+    const checkpoint = checkpoints.get(job.id)!;
+    if (checkpoint.workbook) await writer.restore(checkpoint.workbook);
+    else await writer.prepare(job.project_id, cases.map(item => item.id));
+    checkpoint.workbook = writer.checkpoint();
     job.result_files = writer.files;
+    touch(job);
     const officePlans = new Map(listOfficePlans(job.project_id).map((item) => [item.office_key, item]));
     let activeOfficeKey = "";
-    for (const item of cases) {
+    for (const item of cases.slice(job.completed)) {
       if (job.pause_requested) await waitForResume(job);
       if (job.stop_requested) break;
       if (job.office_mode === "auto" && item.office_key && item.office_key !== activeOfficeKey) {
@@ -155,15 +177,17 @@ async function executeJob(job: BrowserJob, cases: Array<{ id: number; code: stri
       job.current_title = item.title;
       job.stage = job.workflow_mode === "collect_first" ? "正在发送问题、等待回复并保存完整截图" : "正在发送问题、等待回复、截图并评分";
       touch(job);
-      const results = await runCases(job.project_id, [item.id], "browser", undefined, job.batch_id, job.workflow_mode,
-        { newConversation: true });
-      const result = results[0];
+      const existing = db.row<{id:number}>("SELECT id FROM runs WHERE batch_id=? AND case_id=? AND status IN ('collected','completed') ORDER BY id DESC LIMIT 1", job.batch_id, item.id);
+      const result = checkpoint.pending || (existing ? getRun(existing.id) : undefined) || (await runCases(job.project_id, [item.id], "browser", undefined, job.batch_id, job.workflow_mode,
+        { newConversation: true }))[0];
       if (!result) throw new Error("未返回执行结果");
+      checkpoint.pending = result;
       job.stage = `正在保存 ${item.code} 到 Excel`;
       touch(job);
       await writer.write(item.id, result);
       job.result_workbook_path = writer.files[0]?.url;
       job.completed += 1;
+      delete checkpoint.pending;
       if (job.completed <= 2) {
         const messages = result.messages as Array<{ role: string; content: string }> || [];
         job.trial_results.push({ code: item.code, answer: [...messages].reverse().find(message => message.role === "assistant")?.content || String(result.summary || ""),
@@ -205,10 +229,48 @@ async function waitForResume(job: BrowserJob): Promise<void> {
 }
 
 function requireActive(id: string): BrowserJob {
-  const job = jobs.get(id);
+  let job = jobs.get(id);
+  if (!job) {
+    const checkpoint = readCheckpoint(id) as Checkpoint | undefined;
+    if (checkpoint) {
+      job = checkpoint.job;
+      if (!["completed", "failed", "stopped"].includes(job.status)) { job.status = "stopped"; job.stage = "服务已重启，可从中断处继续"; }
+      checkpoints.set(id, checkpoint); jobs.set(id, job);
+    }
+  }
   if (!job) throw new Error("执行任务不存在或服务已重启");
   return job;
 }
 
-function touch(job: BrowserJob): void { job.updated_at = new Date().toISOString(); }
+export function resumeBrowserBatch(batchId: number): Promise<BrowserJob> {
+  const existing = batchResumes.get(batchId);
+  if (existing) return existing;
+  const promise = restoreBrowserBatch(batchId).finally(() => batchResumes.delete(batchId));
+  batchResumes.set(batchId, promise);
+  return promise;
+}
+
+async function restoreBrowserBatch(batchId: number): Promise<BrowserJob> {
+  if ([...jobs.values()].some(job => job.batch_id !== batchId && !["completed", "failed", "stopped"].includes(job.status))) throw new Error("请先停止其他浏览器任务");
+  let checkpoint = readCheckpoint(batchId) as Checkpoint | undefined;
+  if (!checkpoint) {
+    const legacy = await recoverLegacyBatch(batchId);
+    const now = new Date().toISOString();
+    const job: BrowserJob = { id: randomUUID(), project_id: legacy.batch.project_id, batch_id: batchId,
+      workflow_mode: legacy.batch.workflow_mode, office_mode: legacy.cases.every(item => item.office_key) ? "auto" : "manual",
+      save_options: legacy.options, result_files: legacy.files, result_workbook_path: legacy.files[0]?.url,
+      status: "stopped", stage: "已恢复原结果表", total: legacy.cases.length, completed: legacy.completed,
+      passed: 0, failed: 0, pause_requested: false, stop_requested: false, awaiting_trial_confirmation: false,
+      trial_results: [], created_at: now, updated_at: now };
+    checkpoint = { job, cases: legacy.cases, workbook: legacy.workbook };
+    saveCheckpoint(batchId, job.id, checkpoint);
+  }
+  return resumeBrowserJob(checkpoint.job.id, true);
+}
+
+function touch(job: BrowserJob): void {
+  job.updated_at = new Date().toISOString();
+  const checkpoint = checkpoints.get(job.id);
+  if (checkpoint) saveCheckpoint(job.batch_id, job.id, checkpoint);
+}
 function snapshot(job: BrowserJob): BrowserJob { return { ...job }; }

@@ -10,6 +10,7 @@ export interface SaveOptions { directory: string; column: string; format: "text"
 export interface SavedWorkbook { path: string; name: string; url: string }
 interface SourceCase { id: number; query: string; source_sheet_name: string; source_row_number: number; source_workbook_path: string }
 interface Destination { workbook: ExcelJS.Workbook; file: SavedWorkbook; columns: Map<string, number> }
+export interface WorkbookCheckpoint { destinations: Array<{ key: string; file: SavedWorkbook; columns: Array<[string, number]> }>; cases: Array<{ source: SourceCase; key: string }> }
 
 export function normaliseSaveOptions(raw: Partial<SaveOptions> = {}): SaveOptions {
   const directory = String(raw.directory || "").trim();
@@ -26,6 +27,27 @@ export class IncrementalWorkbook {
   private destinations = new Map<string, Destination>();
   private cases = new Map<number, { source: SourceCase; destination: Destination }>();
   constructor(private batchId: number, private jobId: string, private options: SaveOptions) {}
+
+  checkpoint(): WorkbookCheckpoint {
+    return { destinations: [...this.destinations].map(([key, value]) => ({ key, file: value.file, columns: [...value.columns] })),
+      cases: [...this.cases.values()].map(({ source, destination }) => ({ source, key: [...this.destinations].find(([, value]) => value === destination)![0] })) };
+  }
+
+  async restore(checkpoint: WorkbookCheckpoint): Promise<void> {
+    for (const entry of checkpoint.destinations) {
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.readFile(entry.file.path);
+      this.destinations.set(entry.key, { workbook, file: entry.file, columns: new Map(entry.columns) });
+      this.files.push(entry.file);
+    }
+    for (const entry of checkpoint.cases) this.cases.set(entry.source.id, { source: entry.source, destination: this.destinations.get(entry.key)! });
+  }
+
+  isSaved(caseId: number): boolean {
+    const entry = this.cases.get(caseId);
+    const ledger = entry?.destination.workbook.getWorksheet("__agent_eval_saved");
+    return !!ledger?.getColumn(1).values.some(value => Number(value) === caseId);
+  }
 
   async prepare(projectId: number, caseIds: number[]): Promise<void> {
     const project = db.row<{ source_workbook_path: string }>("SELECT source_workbook_path FROM projects WHERE id=?", projectId);
@@ -76,6 +98,7 @@ export class IncrementalWorkbook {
   }
 
   async write(caseId: number, result: Record<string, unknown>): Promise<void> {
+    if (this.isSaved(caseId)) return;
     const entry = this.cases.get(caseId);
     if (!entry) throw new Error("用例未配置 Excel 保存位置");
     const { source, destination } = entry;
@@ -113,6 +136,8 @@ export class IncrementalWorkbook {
       }
       row.getCell(imageColumn).note = "完整尺寸截图可在执行记录中查看。多张截图按顺序排列在此单元格中。";
     }
+    const ledger = destination.workbook.getWorksheet("__agent_eval_saved") || destination.workbook.addWorksheet("__agent_eval_saved", { state: "veryHidden" });
+    ledger.addRow([caseId]);
     await this.save(destination);
     db.execute("UPDATE evaluation_batches SET result_workbook_path=? WHERE id=?", this.files[0].url, this.batchId);
   }

@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { runHarness } from "../pi-agent/src/harness.js";
 import * as db from "./db.js";
 import { artifactFilePath, browserStatus, closeBrowser, openBrowserSession, screenshotFilePath } from "./browser-runner.js";
-import { getBrowserJob, pauseBrowserJob, resumeBrowserJob, startBrowserJob, stopBrowserJob } from "./browser-jobs.js";
+import { getBrowserJob, pauseBrowserJob, resumeBrowserJob, resumeBrowserBatch, startBrowserJob, stopBrowserJob } from "./browser-jobs.js";
 import type { EvalCase, OfficeAgentConfig, Project, TargetAdapter } from "./domain.js";
 import { buildHtml, buildXlsx } from "./reports.js";
 import { attachCaseToEvaluationSet, clarifyProject, createEvaluationBatch, deleteCases, deleteEvaluationSet, evaluateCollectedBatch, finishEvaluationBatch, generateCasesWithPi, getEvaluationBatch, getRun, hydrateCase, importCasesFromExcel, inspectCasesExcel, listCases, listEvaluationBatches, listEvaluationSets, listOfficePlans, projectSummary, recordBrowserResult, runCases, saveOfficeMappings, seedCases } from "./services.js";
@@ -100,6 +100,8 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
     if (!file || !existsSync(file.path)) throw new HttpError(404, "结果文件不存在");
     return sendFile(response, file.path);
   }
+  match = path.match(/^\/api\/batches\/(\d+)\/resume-browser$/);
+  if (method === "POST" && match) return sendJson(response, 200, await resumeBrowserBatch(Number(match[1])));
   match = path.match(/^\/api\/browser-jobs\/([^/]+)$/);
   if (match && method === "GET") return sendJson(response, 200, getBrowserJob(match[1]));
   match = path.match(/^\/api\/browser-jobs\/([^/]+)\/(pause|resume|stop)$/);
